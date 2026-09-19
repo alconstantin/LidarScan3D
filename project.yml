@@ -1,0 +1,29 @@
+name: LidarScan3D
+options:
+  bundleIdPrefix: com.alconstantin
+  deploymentTarget:
+    iOS: "17.0"
+targets:
+  LidarScan3D:
+    type: application
+    platform: iOS
+    sources: [Sources]
+    scheme: {}
+    info:
+      path: Sources/Info.plist
+      properties:
+        CFBundleDisplayName: LiDAR Scan 3D
+        CFBundleShortVersionString: "1.0"
+        CFBundleVersion: "1"
+        NSCameraUsageDescription: The camera and LiDAR sensor are used to scan objects into 3D models.
+        UILaunchScreen: {}
+        UIRequiredDeviceCapabilities: [arkit]
+        UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
+        # Makes scans and exports visible in the Files app (On My iPhone > LiDAR Scan 3D)
+        UIFileSharingEnabled: true
+        LSSupportsOpeningDocumentsInPlace: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.alconstantin.lidarscan3d
+        TARGETED_DEVICE_FAMILY: "1"
+        SWIFT_VERSION: "5.0"
