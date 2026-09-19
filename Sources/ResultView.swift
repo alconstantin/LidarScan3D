@@ -1,19 +1,23 @@
 import SwiftUI
 import SceneKit
 import UIKit
+import simd
 
-/// 3D preview, real-world dimensions, scaling, flat base and STL/OBJ/USDZ export.
+/// 3D preview, real-world dimensions, orientation, scaling, flat base and STL/OBJ/USDZ export.
 struct ResultView: View {
     let scan: ScanFolder
 
     @State private var texturedScene: SCNScene?
-    @State private var flatScene: SCNScene?
-    @State private var mesh: MeshData?
-    @State private var flatMesh: MeshData?
+    @State private var generatedScene: SCNScene?
+    @State private var mesh: MeshData?          // exactly as loaded, never re-derived
+    @State private var oriented: MeshData?      // mesh after the current orientation
+    @State private var flat: MeshData?          // oriented after the base cut
+    @State private var orientation = MeshData.noRotation
+    @State private var isReoriented = false
     @State private var errorMessage: String?
     @State private var scalePercent: Double = 100
     @State private var flatBase = false
-    @State private var trimMM: Double = 0
+    @State private var trimFraction: Double = 0
     @State private var isPreparing = false
     @State private var isExporting = false
     @State private var shareItem: ShareItem?
@@ -22,23 +26,34 @@ struct ResultView: View {
 
     private enum Format { case stl, obj }
 
+    private static let xAxis = SIMD3<Float>(1, 0, 0)
+    private static let yAxis = SIMD3<Float>(0, 1, 0)
+
     /// What the size readout and the exporters work from.
-    private var activeMesh: MeshData? { flatBase ? flatMesh : mesh }
+    private var activeMesh: MeshData? { flatBase ? flat : oriented }
+
+    /// The textured USDZ cannot show a turn or a cut, so anything that changes the
+    /// geometry switches the preview to the mesh actually being exported.
+    private var showsGeneratedPreview: Bool { flatBase || isReoriented }
+
+    private var trimMM: Float {
+        Float(trimFraction) * (oriented?.sizeMM.z ?? 0)
+    }
 
     var body: some View {
         List {
             Section {
-                if let scene = flatBase ? flatScene : texturedScene {
+                if let scene = showsGeneratedPreview ? generatedScene : texturedScene {
                     SceneView(scene: scene, options: [.allowsCameraControl, .autoenablesDefaultLighting])
                         .frame(height: 320)
-                        .id(flatBase)
+                        .id(showsGeneratedPreview)
                 } else {
                     ProgressView().frame(maxWidth: .infinity, minHeight: 320)
                 }
             }
             .listRowInsets(EdgeInsets())
 
-            if let mesh, let activeMesh {
+            if let activeMesh {
                 Section {
                     let size = activeMesh.sizeMM * Float(scalePercent / 100)
                     LabeledContent("Size (X × Y × Z)", value: "\(mm(size.x)) × \(mm(size.y)) × \(mm(size.z)) mm")
@@ -58,26 +73,45 @@ struct ResultView: View {
                 }
 
                 Section {
+                    HStack {
+                        turnButton("Tip back", "arrow.up", axis: Self.xAxis, clockwise: true)
+                        turnButton("Tip forward", "arrow.down", axis: Self.xAxis, clockwise: false)
+                        turnButton("Tip left", "arrow.left", axis: Self.yAxis, clockwise: true)
+                        turnButton("Tip right", "arrow.right", axis: Self.yAxis, clockwise: false)
+                    }
+                    if isReoriented {
+                        Button("Reset orientation") {
+                            orientation = MeshData.noRotation
+                            isReoriented = false
+                            rebuild()
+                        }
+                    }
+                } header: {
+                    Text("Orientation")
+                } footer: {
+                    Text("Quarter turns, which between them reach every side. The flat base is cut from whichever side faces the bed, so turn the model until the side you want to print on is down. The grey bed in the preview shows how the model sits: a scan that leans touches it on one side and lifts off on the other.")
+                }
+
+                Section {
                     Toggle("Flat base", isOn: $flatBase)
                         .onChange(of: flatBase) { _, isOn in
-                            if isOn, trimMM == 0 {
-                                trimMM = Double(mesh.sizeMM.z) * 0.02
-                            }
-                            prepareFlatBase()
+                            if isOn, trimFraction == 0 { trimFraction = 0.02 }
+                            rebuild()
                         }
 
                     if flatBase {
                         VStack(alignment: .leading) {
                             HStack {
-                                Text("Trim from bottom: \(mm(Float(trimMM))) mm")
+                                Text("Trim from bottom: \(mm(trimMM)) mm")
                                 if isPreparing {
                                     Spacer()
                                     ProgressView().controlSize(.small)
                                 }
                             }
-                            // A zero-height range would be an invalid slider, so keep a floor.
-                            Slider(value: $trimMM, in: 0...max(Double(mesh.sizeMM.z) * 0.2, 0.1), step: 0.1) { editing in
-                                if !editing { prepareFlatBase() }
+                            // Held as a fraction of height, so a quarter turn onto a
+                            // different side cannot leave the trim out of range.
+                            Slider(value: $trimFraction, in: 0...0.2, step: 0.005) { editing in
+                                if !editing { rebuild() }
                             }
                         }
                     }
@@ -132,6 +166,20 @@ struct ResultView: View {
         }
     }
 
+    private func turnButton(_ title: String, _ symbol: String, axis: SIMD3<Float>, clockwise: Bool) -> some View {
+        Button {
+            orientation = MeshData.quarterTurn(about: axis, clockwise: clockwise) * orientation
+            isReoriented = true
+            rebuild()
+        } label: {
+            Label(title, systemImage: symbol)
+                .labelStyle(.iconOnly)
+                .frame(maxWidth: .infinity)
+        }
+        .buttonStyle(.bordered)
+        .accessibilityLabel(title)
+    }
+
     private func load() async {
         guard mesh == nil else { return }
         let url = scan.modelURL
@@ -140,26 +188,33 @@ struct ResultView: View {
             texturedScene = loaded
         }
         do {
-            mesh = try await Task.detached { try MeshData.load(from: url) }.value
+            let loaded = try await Task.detached { try MeshData.load(from: url) }.value
+            mesh = loaded
+            oriented = loaded
         } catch {
             errorMessage = "Could not read the model: \(error.localizedDescription)"
         }
     }
 
-    /// Recomputes the cut mesh and its preview. Cheap enough to run on release of the
-    /// slider, expensive enough not to run on every tick of it.
-    private func prepareFlatBase() {
-        guard flatBase, let mesh else {
-            flatMesh = nil
-            flatScene = nil
-            return
-        }
+    /// Re-derives the oriented mesh, the cut mesh and the preview from the untouched
+    /// original. Turning and trimming both come through here, so neither accumulates
+    /// rounding error across repeated taps — only the quaternion accumulates.
+    private func rebuild() {
+        guard let mesh else { return }
         isPreparing = true
-        let trim = Float(trimMM)
+        let rotation = orientation
+        let fraction = flatBase ? Float(trimFraction) : 0
+
         Task {
-            let cut = await Task.detached { mesh.flatBase(trimMM: trim) }.value
-            flatMesh = cut
-            flatScene = makeScene(for: cut)
+            let result = await Task.detached { () -> (MeshData, MeshData?) in
+                let oriented = mesh.rotated(by: rotation)
+                guard fraction > 0 else { return (oriented, nil) }
+                return (oriented, oriented.flatBase(trimMM: oriented.sizeMM.z * fraction))
+            }.value
+
+            oriented = result.0
+            flat = result.1
+            generatedScene = makeScene(for: result.1 ?? result.0)
             isPreparing = false
         }
     }
@@ -168,12 +223,23 @@ struct ResultView: View {
         let scene = SCNScene()
         scene.background.contents = UIColor.secondarySystemBackground
 
-        let node = SCNNode(geometry: mesh.makeGeometry())
         // The mesh is Z-up and rests on Z = 0; SceneKit is Y-up. Rotating -90° about X
         // stands it upright, then it drops by half its height to sit around the origin.
+        let node = SCNNode(geometry: mesh.makeGeometry())
         node.eulerAngles.x = -.pi / 2
         node.position = SCNVector3(0, -mesh.sizeMM.z / 2, 0)
         scene.rootNode.addChildNode(node)
+
+        // Something to judge the base against by eye, which beats guessing at the lean
+        // from a plane fit through a surface that is rough by definition.
+        let span = CGFloat(max(mesh.sizeMM.x, mesh.sizeMM.y) * 1.8)
+        let bed = SCNPlane(width: span, height: span)
+        bed.firstMaterial?.diffuse.contents = UIColor.tertiarySystemFill
+        bed.firstMaterial?.isDoubleSided = true
+        let bedNode = SCNNode(geometry: bed)
+        bedNode.eulerAngles.x = -.pi / 2
+        bedNode.position = SCNVector3(0, -mesh.sizeMM.z / 2, 0)
+        scene.rootNode.addChildNode(bedNode)
 
         // Units are millimetres, so the default camera clips badly without help.
         let longest = max(mesh.sizeMM.max(), 1)
@@ -182,7 +248,7 @@ struct ResultView: View {
         camera.zFar = Double(longest) * 20
         let cameraNode = SCNNode()
         cameraNode.camera = camera
-        cameraNode.position = SCNVector3(0, 0, longest * 2.2)
+        cameraNode.position = SCNVector3(0, longest * 0.4, longest * 2.2)
         scene.rootNode.addChildNode(cameraNode)
 
         return scene
