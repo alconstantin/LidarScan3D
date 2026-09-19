@@ -74,18 +74,38 @@ struct MeshData: Sendable {
             }
         }
         guard !indices.isEmpty else { throw MeshError.noGeometry }
+        return seated(vertices: vertices, indices: indices)
+    }
 
-        var lo = vertices[0]
-        var hi = vertices[0]
+    /// Re-centres on X/Y, seats the lowest point on Z = 0 and recomputes the print size.
+    /// Everything that moves geometry ends here, so exports always rest on the bed.
+    static func seated(vertices: [SIMD3<Float>], indices: [UInt32]) -> MeshData {
+        guard let first = vertices.first else {
+            return MeshData(vertices: [], indices: [], sizeMM: .zero)
+        }
+        var lo = first, hi = first
         for v in vertices {
             lo = simd_min(lo, v)
             hi = simd_max(hi, v)
         }
         let offset = SIMD3<Float>(-(lo.x + hi.x) / 2, -(lo.y + hi.y) / 2, -lo.z)
-        vertices = vertices.map { $0 + offset }
-
-        return MeshData(vertices: vertices, indices: indices, sizeMM: hi - lo)
+        return MeshData(vertices: vertices.map { $0 + offset }, indices: indices, sizeMM: hi - lo)
     }
+
+    /// The same mesh turned by `rotation` and re-seated on the bed.
+    func rotated(by rotation: simd_quatf) -> MeshData {
+        // An identity quaternion has no imaginary part; skip the pass entirely.
+        guard simd_length(rotation.imag) > 1e-6 else { return self }
+        return MeshData.seated(vertices: vertices.map { rotation.act($0) }, indices: indices)
+    }
+
+    /// A quarter turn about `axis`, for choosing which side of the scan faces the bed.
+    /// Quarter turns about X and Y reach all 24 axis-aligned orientations between them.
+    static func quarterTurn(about axis: SIMD3<Float>, clockwise: Bool) -> simd_quatf {
+        simd_quatf(angle: clockwise ? -.pi / 2 : .pi / 2, axis: axis)
+    }
+
+    static let noRotation = simd_quatf(angle: 0, axis: SIMD3<Float>(0, 0, 1))
 
     /// Slices everything below `trimMM` off the bottom and closes the opening with a
     /// flat face, so the print meets the bed on a solid surface instead of on whatever
@@ -208,14 +228,7 @@ struct MeshData: Sendable {
             }
         }
 
-        var lo = outVertices[0], hi = outVertices[0]
-        for v in outVertices {
-            lo = simd_min(lo, v)
-            hi = simd_max(hi, v)
-        }
-        let offset = SIMD3<Float>(-(lo.x + hi.x) / 2, -(lo.y + hi.y) / 2, -lo.z)
-
-        return MeshData(vertices: outVertices.map { $0 + offset }, indices: outIndices, sizeMM: hi - lo)
+        return MeshData.seated(vertices: outVertices, indices: outIndices)
     }
 
     /// Untextured preview geometry. Stays Z-up, so the displaying node has to be rotated.
