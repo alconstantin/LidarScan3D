@@ -12,6 +12,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # The print-critical geometry compiles without UIKit, so it can be tested
+      # here rather than only on a device.
+      - name: Test geometry
+        run: swift test
+
       - name: Generate Xcode project
         run: |
           brew install xcodegen

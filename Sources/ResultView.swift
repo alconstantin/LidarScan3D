@@ -19,12 +19,18 @@ struct ResultView: View {
     @State private var flatBase = false
     @State private var trimFraction: Double = 0
     @State private var isPreparing = false
+    /// Bumped by every rebuild; a task whose stamp is stale drops its result.
+    @State private var rebuildGeneration = 0
     @State private var isExporting = false
     @State private var shareItem: ShareItem?
     @State private var showingCalibration = false
     @State private var calibrationText = ""
 
     private enum Format { case stl, obj }
+
+    /// The slider's range. Calibration clamps to it too, so the readout and the
+    /// control can never disagree.
+    private static let scaleRange: ClosedRange<Double> = 10...500
 
     private static let xAxis = SIMD3<Float>(1, 0, 0)
     private static let yAxis = SIMD3<Float>(0, 1, 0)
@@ -73,7 +79,7 @@ struct ResultView: View {
                     LabeledContent("Triangles", value: activeMesh.triangleCount.formatted())
                     VStack(alignment: .leading) {
                         Text("Scale: \(Int(scalePercent.rounded())) %")
-                        Slider(value: $scalePercent, in: 10...500, step: 1)
+                        Slider(value: $scalePercent, in: Self.scaleRange, step: 1)
                     }
                     Button("Match real size…") {
                         calibrationText = ""
@@ -220,6 +226,8 @@ struct ResultView: View {
     private func rebuild() {
         guard let mesh else { return }
         isPreparing = true
+        rebuildGeneration += 1
+        let generation = rebuildGeneration
         let rotation = orientation
         let fraction = flatBase ? Float(trimFraction) : 0
 
@@ -230,6 +238,10 @@ struct ResultView: View {
                 return (oriented, oriented.flatBase(trimMM: oriented.sizeMM.z * fraction))
             }.value
 
+            // Turns are cheap but a cut on a large scan is not, so two quick taps can
+            // finish out of order. Only the newest rebuild may publish, or the mesh on
+            // screen and in the export stops matching the accumulated orientation.
+            guard generation == rebuildGeneration else { return }
             oriented = result.0
             flat = result.1
             generatedScene = makeScene(for: result.1 ?? result.0)
@@ -276,7 +288,8 @@ struct ResultView: View {
         guard let activeMesh,
               let real = Double(calibrationText.replacingOccurrences(of: ",", with: ".")),
               real > 0, activeMesh.longestSideMM > 0 else { return }
-        scalePercent = real / Double(activeMesh.longestSideMM) * 100
+        let percent = real / Double(activeMesh.longestSideMM) * 100
+        scalePercent = min(max(percent, Self.scaleRange.lowerBound), Self.scaleRange.upperBound)
     }
 
     private func export(_ format: Format) {
@@ -284,20 +297,22 @@ struct ResultView: View {
         isExporting = true
         errorMessage = nil
         let scale = Float(scalePercent / 100)
-        let suffix = flatBase ? " flat" : ""
-        let baseURL = scan.exportsURL
-            .appendingPathComponent("\(scan.name) \(Int(scalePercent.rounded()))pct\(suffix)")
+        // The trim goes in the name: without it, two different cuts collide. The
+        // orientation cannot be named usefully, so uniqueURL catches what is left.
+        let suffix = flatBase ? String(format: " flat %.1fmm", Double(trimMM)) : ""
+        let baseName = "\(scan.name) \(Int(scalePercent.rounded()))pct\(suffix)"
+        let exportsURL = scan.exportsURL
 
         Task {
             do {
                 let url = try await Task.detached { () throws -> URL in
                     switch format {
                     case .stl:
-                        let url = baseURL.appendingPathExtension("stl")
+                        let url = Self.uniqueURL(in: exportsURL, name: baseName, ext: "stl")
                         try mesh.writeBinarySTL(to: url, scale: scale)
                         return url
                     case .obj:
-                        let url = baseURL.appendingPathExtension("obj")
+                        let url = Self.uniqueURL(in: exportsURL, name: baseName, ext: "obj")
                         try mesh.writeOBJ(to: url, scale: scale)
                         return url
                     }
@@ -308,6 +323,18 @@ struct ResultView: View {
             }
             isExporting = false
         }
+    }
+
+    /// `name.ext`, or `name (2).ext` if that is taken. An export is minutes of the
+    /// user's time; silently replacing an earlier one loses work that cannot be undone.
+    private nonisolated static func uniqueURL(in directory: URL, name: String, ext: String) -> URL {
+        let candidate = directory.appendingPathComponent(name).appendingPathExtension(ext)
+        guard FileManager.default.fileExists(atPath: candidate.path) else { return candidate }
+        for n in 2... {
+            let next = directory.appendingPathComponent("\(name) (\(n))").appendingPathExtension(ext)
+            if !FileManager.default.fileExists(atPath: next.path) { return next }
+        }
+        return candidate
     }
 
     private func mm(_ value: Float) -> String {

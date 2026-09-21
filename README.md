@@ -119,10 +119,18 @@ silhouette down rather than remove it:
    breaks watertightness. Vertices are matched at micron precision, so anything within
    a micron of the cut hits this.
 
-The cut was audited by porting it to a reference implementation and checking that
-every edge is shared by exactly two triangles, and that signed volumes match analytic
-values. Sphere cuts (including planes landing exactly on vertex rings) and a
-two-legged object all come out with zero non-manifold edges.
+The cut is covered by `Tests/GeometryTests`, which checks that every edge is shared
+by exactly two triangles in the same two directions, and that signed volumes match
+analytic values. Sphere cuts (including planes landing exactly on vertex rings), a
+two-legged object whose caps must stay independent, and an open mesh that the cut must
+not make worse all run on every push. Because `Sources/Geometry` carries no UIKit
+dependency, the tests compile the app's own source rather than a copy:
+
+```sh
+swift test
+```
+
+`tools/check_stl.py` runs the same checks against a real exported `.stl`.
 
 **Orientation** is stored as a quaternion and always re-applied to the untouched
 original mesh, so repeated turns accumulate in the quaternion and never in the
@@ -138,18 +146,22 @@ every side is reachable.
 | `Sources/CaptureView.swift` | Guided capture UI and live feedback |
 | `Sources/ReconstructionView.swift` | Reconstruction progress |
 | `Sources/ResultView.swift` | Preview, orientation, scale, flat base, export |
-| `Sources/MeshData.swift` | Mesh loading, plane cut, STL/OBJ writers |
+| `Sources/Geometry/MeshData.swift` | Mesh loading, plane cut, STL/OBJ writers |
+| `Sources/MeshDataPreview.swift` | SceneKit preview geometry (the only UIKit part of the mesh code) |
 | `Sources/ScanFolder.swift` | On-disk layout of a scan |
+| `Tests/GeometryTests/` | Geometry tests, run on macOS by `swift test` |
+| `tools/check_stl.py` | Audits an exported STL for printability |
 | `project.yml` | XcodeGen spec — edit this, not the `.xcodeproj` |
+| `Package.swift` | Builds `Sources/Geometry` alone, so CI can test it |
 
 Each scan lives in `Documents/Scans/<name>/` holding `Images`, `Checkpoints`,
 `Exports` and `model.usdz`.
 
 ## Known limitations
 
-- **Not yet run on a device.** The geometry is verified against synthetic meshes and
-  the app compiles, but no real scan has been through it. Treat the defaults —
-  particularly the 2% starting trim — as untested guesses.
+- **Not yet run on a device.** The geometry is covered by tests and the app compiles,
+  but no real scan has been through it. Treat the defaults — particularly the 2%
+  starting trim — as untested guesses.
 - **Watertightness depends on the input.** The plane cut preserves it, but cannot
   create it: a non-manifold scan produces a non-manifold STL. Object Capture meshes
   are not guaranteed clean, so a slicer may still complain.

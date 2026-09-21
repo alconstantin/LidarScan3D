@@ -48,7 +48,9 @@ struct HomeView: View {
                 }
             }
             .navigationTitle("LiDAR Scan 3D")
-            .onAppear { scans = ScanFolder.all() }
+            // Listing the folder stats every scan on disk, which does not belong
+            // on the main thread once a few dozen have piled up.
+            .task { scans = await Task.detached { ScanFolder.all() }.value }
         }
     }
 
