@@ -1,5 +1,7 @@
 import SwiftUI
-import SceneKit
+// SceneKit predates Sendable. A scene is built on one thread and handed over
+// once, never touched from two at a time, so its warnings do not apply here.
+@preconcurrency import SceneKit
 import UIKit
 import simd
 
@@ -207,10 +209,13 @@ struct ResultView: View {
     private func load() async {
         guard mesh == nil else { return }
         let url = scan.modelURL
-        if let loaded = try? SCNScene(url: url, options: nil) {
+        // Parsing a textured USDZ is seconds of work on a real scan, and SCNScene(url:)
+        // does all of it synchronously on whatever thread asks.
+        texturedScene = await Task.detached {
+            guard let loaded = try? SCNScene(url: url, options: nil) else { return nil }
             loaded.background.contents = UIColor.secondarySystemBackground
-            texturedScene = loaded
-        }
+            return loaded
+        }.value
         do {
             let loaded = try await Task.detached { try MeshData.load(from: url) }.value
             mesh = loaded
@@ -232,10 +237,14 @@ struct ResultView: View {
         let fraction = flatBase ? Float(trimFraction) : 0
 
         Task {
-            let result = await Task.detached { () -> (MeshData, MeshData?) in
+            // The scene is built here too, not after the hop back. makeGeometry walks
+            // every triangle to accumulate normals and then packs two vertex-sized
+            // arrays, which on a scan-scale mesh is the most expensive step of the lot.
+            let result = await Task.detached { () -> (MeshData, MeshData?, SCNScene) in
                 let oriented = mesh.rotated(by: rotation)
-                guard fraction > 0 else { return (oriented, nil) }
-                return (oriented, oriented.flatBase(trimMM: oriented.sizeMM.z * fraction))
+                guard fraction > 0 else { return (oriented, nil, Self.makeScene(for: oriented)) }
+                let cut = oriented.flatBase(trimMM: oriented.sizeMM.z * fraction)
+                return (oriented, cut, Self.makeScene(for: cut))
             }.value
 
             // Turns are cheap but a cut on a large scan is not, so two quick taps can
@@ -244,12 +253,12 @@ struct ResultView: View {
             guard generation == rebuildGeneration else { return }
             oriented = result.0
             flat = result.1
-            generatedScene = makeScene(for: result.1 ?? result.0)
+            generatedScene = result.2
             isPreparing = false
         }
     }
 
-    private func makeScene(for mesh: MeshData) -> SCNScene {
+    private nonisolated static func makeScene(for mesh: MeshData) -> SCNScene {
         let scene = SCNScene()
         scene.background.contents = UIColor.secondarySystemBackground
 
