@@ -30,11 +30,24 @@ struct ResultView: View {
     private static let yAxis = SIMD3<Float>(0, 1, 0)
 
     /// What the size readout and the exporters work from.
-    private var activeMesh: MeshData? { flatBase ? flat : oriented }
+    ///
+    /// This must never go nil once a mesh has loaded. The controls live behind it, so
+    /// returning nil while a cut is still being computed would tear the toggle that
+    /// started the cut out of the view tree, losing the very callback that finishes it.
+    /// Until the cut lands, the mesh it is being cut from stands in for it.
+    private var activeMesh: MeshData? {
+        if flatBase, let flat { return flat }
+        return oriented ?? mesh
+    }
 
     /// The textured USDZ cannot show a turn or a cut, so anything that changes the
     /// geometry switches the preview to the mesh actually being exported.
     private var showsGeneratedPreview: Bool { flatBase || isReoriented }
+
+    /// Falls back rather than blanking: an empty preview reads as a hang.
+    private var previewScene: SCNScene? {
+        showsGeneratedPreview ? (generatedScene ?? texturedScene) : texturedScene
+    }
 
     private var trimMM: Float {
         Float(trimFraction) * (oriented?.sizeMM.z ?? 0)
@@ -43,10 +56,10 @@ struct ResultView: View {
     var body: some View {
         List {
             Section {
-                if let scene = showsGeneratedPreview ? generatedScene : texturedScene {
+                if let scene = previewScene {
                     SceneView(scene: scene, options: [.allowsCameraControl, .autoenablesDefaultLighting])
                         .frame(height: 320)
-                        .id(showsGeneratedPreview)
+                        .id(ObjectIdentifier(scene))
                 } else {
                     ProgressView().frame(maxWidth: .infinity, minHeight: 320)
                 }
@@ -93,11 +106,16 @@ struct ResultView: View {
                 }
 
                 Section {
-                    Toggle("Flat base", isOn: $flatBase)
-                        .onChange(of: flatBase) { _, isOn in
+                    // The rebuild rides the binding rather than onChange: the handler runs
+                    // from the tap itself, so it cannot be lost if this row is rebuilt.
+                    Toggle("Flat base", isOn: Binding(
+                        get: { flatBase },
+                        set: { isOn in
+                            flatBase = isOn
                             if isOn, trimFraction == 0 { trimFraction = 0.02 }
                             rebuild()
                         }
+                    ))
 
                     if flatBase {
                         VStack(alignment: .leading) {
