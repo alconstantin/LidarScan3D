@@ -22,7 +22,19 @@ final class AppModel {
     @ObservationIgnored private var userCancelledCapture = false
     @ObservationIgnored private let reconstruction = SessionBox()
 
-    static var isSupported: Bool { ObjectCaptureSession.isSupported }
+    /// Object Capture reports itself supported on some hardware that cannot feed it
+    /// depth. Both have to hold, or capture starts and then quietly produces nothing.
+    static var isSupported: Bool { ObjectCaptureSession.isSupported && DeviceCapability.hasSceneDepth }
+
+    static var unsupportedReason: String? {
+        if !ObjectCaptureSession.isSupported {
+            return "This device does not support Object Capture. It needs an iPhone or iPad Pro with a LiDAR sensor, running iOS 17 or later."
+        }
+        if !DeviceCapability.hasSceneDepth {
+            return "This device has no LiDAR depth sensor, which Object Capture needs to measure the object. Scanning would start but never capture anything. LiDAR is on the Pro iPhone models and the iPad Pro."
+        }
+        return nil
+    }
 
     func goHome() {
         phase = .home
@@ -31,8 +43,9 @@ final class AppModel {
     // MARK: Capture
 
     func startNewScan() {
-        guard ObjectCaptureSession.isSupported else {
-            phase = .failed("This device does not support Object Capture. A LiDAR-equipped iPhone/iPad Pro with iOS 17 or later is required.")
+        DeviceCapability.log()
+        if let unsupportedReason = Self.unsupportedReason {
+            phase = .failed(unsupportedReason)
             return
         }
         do {
@@ -45,8 +58,10 @@ final class AppModel {
 
             let session = ObjectCaptureSession()
             session.start(imagesDirectory: scan.imagesURL, configuration: configuration)
+            captureLog.notice("session started, images=\(scan.imagesURL.lastPathComponent, privacy: .public)")
             phase = .capturing(session)
             observe(session)
+            observeFeedback(session)
         } catch {
             phase = .failed("Could not create the scan folder: \(error.localizedDescription)")
         }
@@ -61,6 +76,7 @@ final class AppModel {
         Task { [weak self] in
             for await state in session.stateUpdates {
                 guard let self else { return }
+                captureLog.notice("state -> \(state.label, privacy: .public)")
                 switch state {
                 case .completed:
                     // Leaving the capturing phase releases the capture session (and its memory)
@@ -68,6 +84,7 @@ final class AppModel {
                     self.startReconstruction()
                     return
                 case .failed(let error):
+                    captureLog.error("capture failed: \(String(describing: error), privacy: .public)")
                     if self.userCancelledCapture {
                         self.discardCurrentScan()
                         self.phase = .home
@@ -78,6 +95,17 @@ final class AppModel {
                 default:
                     break
                 }
+            }
+        }
+    }
+
+    /// Feedback is the only signal that says why capture is not progressing.
+    private func observeFeedback(_ session: ObjectCaptureSession) {
+        Task { [weak self] in
+            for await feedback in session.feedbackUpdates {
+                guard self != nil else { return }
+                let names = feedback.map(\.label).sorted().joined(separator: ",")
+                captureLog.notice("feedback -> [\(names, privacy: .public)]")
             }
         }
     }

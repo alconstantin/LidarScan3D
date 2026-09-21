@@ -55,7 +55,11 @@ struct CaptureView: View {
             HStack {
                 Button("Reset box") { _ = session.resetDetection() }
                     .buttonStyle(.bordered)
-                Button("Start capture") { session.startCapturing() }
+                Button("Start capture") {
+                    captureLog.notice("tapped Start capture, state=\(session.state.label, privacy: .public)")
+                    session.startCapturing()
+                    captureLog.notice("startCapturing returned, state=\(session.state.label, privacy: .public)")
+                }
                     .buttonStyle(.borderedProminent)
             }
             .controlSize(.large)
@@ -84,8 +88,30 @@ struct CaptureView: View {
                 .padding()
                 .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
 
+        case .failed(let error):
+            // Previously this fell into a bare spinner, which is exactly what a hang
+            // looks like. A stalled session should say so.
+            VStack(spacing: 10) {
+                Label("Capture failed", systemImage: "exclamationmark.triangle")
+                    .font(.headline)
+                Text(error.localizedDescription)
+                    .font(.footnote)
+                    .multilineTextAlignment(.center)
+                Button("Back to start") { model.goHome() }
+                    .buttonStyle(.borderedProminent)
+            }
+            .padding()
+            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16))
+
         default:
-            ProgressView()
+            VStack(spacing: 8) {
+                ProgressView()
+                Text(session.state.label)
+                    .font(.caption.monospaced())
+                    .foregroundStyle(.secondary)
+            }
+            .padding(10)
+            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 10))
         }
     }
 
