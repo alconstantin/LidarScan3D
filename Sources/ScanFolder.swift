@@ -1,7 +1,7 @@
 import Foundation
 
 /// One scan on disk: Documents/Scans/<name>/{Images, Checkpoints, Exports, model.usdz}
-struct ScanFolder: Identifiable, Hashable {
+struct ScanFolder: Identifiable, Hashable, Sendable {
     let url: URL
 
     var id: URL { url }
