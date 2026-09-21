@@ -19,8 +19,8 @@ struct HomeView: View {
                     .buttonStyle(.borderedProminent)
                     .disabled(!AppModel.isSupported)
 
-                    if !AppModel.isSupported {
-                        Text("This device doesn't support Object Capture (it needs LiDAR and iOS 17 or later).")
+                    if let reason = AppModel.unsupportedReason {
+                        Text(reason)
                             .font(.footnote)
                             .foregroundStyle(.red)
                     }

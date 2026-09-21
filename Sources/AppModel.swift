@@ -22,7 +22,19 @@ final class AppModel {
     @ObservationIgnored private var userCancelledCapture = false
     @ObservationIgnored private let reconstruction = SessionBox()
 
-    static var isSupported: Bool { ObjectCaptureSession.isSupported }
+    /// Object Capture reports itself supported on some hardware that cannot feed it
+    /// depth. Both have to hold, or capture starts and then quietly produces nothing.
+    static var isSupported: Bool { ObjectCaptureSession.isSupported && DeviceCapability.hasSceneDepth }
+
+    static var unsupportedReason: String? {
+        if !ObjectCaptureSession.isSupported {
+            return "This device does not support Object Capture. It needs an iPhone or iPad Pro with a LiDAR sensor, running iOS 17 or later."
+        }
+        if !DeviceCapability.hasSceneDepth {
+            return "This device has no LiDAR depth sensor, which Object Capture needs to measure the object. Scanning would start but never capture anything. LiDAR is on the Pro iPhone models and the iPad Pro."
+        }
+        return nil
+    }
 
     func goHome() {
         phase = .home
@@ -31,8 +43,9 @@ final class AppModel {
     // MARK: Capture
 
     func startNewScan() {
-        guard ObjectCaptureSession.isSupported else {
-            phase = .failed("This device does not support Object Capture. A LiDAR-equipped iPhone/iPad Pro with iOS 17 or later is required.")
+        DeviceCapability.log()
+        if let unsupportedReason = Self.unsupportedReason {
+            phase = .failed(unsupportedReason)
             return
         }
         do {

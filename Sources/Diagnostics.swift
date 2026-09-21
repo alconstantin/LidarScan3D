@@ -2,6 +2,7 @@ import Foundation
 import OSLog
 // ObjectCaptureSession lives in the RealityKit/SwiftUI cross-import overlay, so it is
 // only visible when both are imported.
+import ARKit
 import RealityKit
 import SwiftUI
 
@@ -40,5 +41,34 @@ extension ObjectCaptureSession.Feedback {
         case .objectNotDetected: "objectNotDetected"
         @unknown default: "unknown"
         }
+    }
+}
+
+/// What the hardware can actually do. Object Capture needs LiDAR depth in every ARFrame;
+/// without it the logs fill with "No depth map is available in ARFrame!" and the session
+/// never produces a point cloud, however healthy the state machine looks.
+enum DeviceCapability {
+    static var hasSceneDepth: Bool {
+        ARWorldTrackingConfiguration.supportsFrameSemantics(.sceneDepth)
+    }
+
+    /// e.g. "iPhone16,1". Non-Pro iPhones carry a Dynamic Island but no LiDAR, so the
+    /// exact model is the difference between "unsupported" and "broken".
+    static var modelIdentifier: String {
+        var info = utsname()
+        uname(&info)
+        return withUnsafeBytes(of: &info.machine) { raw in
+            String(decoding: raw.prefix(while: { $0 != 0 }), as: UTF8.self)
+        }
+    }
+
+    @MainActor
+    static func log() {
+        captureLog.notice("""
+            device=\(modelIdentifier, privacy: .public) \
+            iOS=\(UIDevice.current.systemVersion, privacy: .public) \
+            objectCapture=\(ObjectCaptureSession.isSupported, privacy: .public) \
+            sceneDepth=\(hasSceneDepth, privacy: .public)
+            """)
     }
 }
