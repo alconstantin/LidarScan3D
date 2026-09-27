@@ -10,7 +10,7 @@ enum MeshError: LocalizedError {
 
 /// Vertices are matched at micron precision, which is far finer than a printer
 /// resolves and coarse enough to fuse the duplicates a plane cut produces.
-private struct VertexKey: Hashable {
+struct VertexKey: Hashable {
     let x: Int32, y: Int32, z: Int32
 
     init(_ p: SIMD3<Float>) {
@@ -72,7 +72,42 @@ struct MeshData: Sendable {
             }
         }
         guard !indices.isEmpty else { throw MeshError.noGeometry }
-        return seated(vertices: vertices, indices: indices)
+        return welded(vertices: vertices, indices: indices)
+    }
+
+    /// Fuses vertices that share a position, then seats the result.
+    ///
+    /// Object Capture splits a vertex wherever a texture seam runs through it, so one
+    /// point on the surface can appear several times under different indices. The
+    /// triangles either side of a seam then share no edge, and the mesh reads as full
+    /// of holes to anything that counts edges -- the printability report included.
+    /// Triangles that collapse when their corners fuse are dropped.
+    static func welded(vertices: [SIMD3<Float>], indices: [UInt32]) -> MeshData {
+        var lookup: [VertexKey: UInt32] = [:]
+        lookup.reserveCapacity(vertices.count)
+        var unique: [SIMD3<Float>] = []
+        var remap = [UInt32](repeating: 0, count: vertices.count)
+        for (i, v) in vertices.enumerated() {
+            let key = VertexKey(v)
+            if let existing = lookup[key] {
+                remap[i] = existing
+            } else {
+                remap[i] = UInt32(unique.count)
+                lookup[key] = remap[i]
+                unique.append(v)
+            }
+        }
+
+        var fused: [UInt32] = []
+        fused.reserveCapacity(indices.count)
+        for t in 0..<indices.count / 3 {
+            let a = remap[Int(indices[t * 3])], b = remap[Int(indices[t * 3 + 1])], c = remap[Int(indices[t * 3 + 2])]
+            guard a != b, b != c, a != c else { continue }
+            fused.append(a)
+            fused.append(b)
+            fused.append(c)
+        }
+        return seated(vertices: unique, indices: fused)
     }
 
     /// Re-centres on X/Y, seats the lowest point on Z = 0 and recomputes the print size.

@@ -40,6 +40,7 @@ jobs:
         run: |
           app=build/Build/Products/Release-iphoneos/LidarScan3D.app
           test -f "$app/PrivacyInfo.xcprivacy" || { echo "::error::PrivacyInfo.xcprivacy is not in the app bundle"; exit 1; }
+          test -f "$app/SampleVase.obj" || { echo "::error::The sample scan is not in the app bundle"; exit 1; }
           icon=$(plutil -extract CFBundleIcons.CFBundlePrimaryIcon.CFBundleIconName raw "$app/Info.plist" 2>/dev/null || true)
           [ "$icon" = "AppIcon" ] || { echo "::error::No app icon in Info.plist (got '$icon')"; exit 1; }
           [ "$(plutil -extract ITSAppUsesNonExemptEncryption raw "$app/Info.plist")" = "false" ] || { echo "::error::ITSAppUsesNonExemptEncryption missing"; exit 1; }
