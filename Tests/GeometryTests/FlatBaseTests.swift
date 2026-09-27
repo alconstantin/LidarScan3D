@@ -38,6 +38,41 @@ final class FlatBaseTests: XCTestCase {
         XCTAssertEqual(report.volumeMM3, 2 * 3 * 8 * 15, accuracy: 0.01, "two legs, 15mm of each left")
     }
 
+    /// A bowl or vase standing on a foot ring cuts into a loop inside a loop. The inner
+    /// one is a hole: capping it too fills the ring and leaves the mesh non-manifold.
+    func testRingFootKeepsItsHole() {
+        let torus = Solids.torus(major: 30, minor: 10)
+        XCTAssertTrue(SurfaceReport(torus).isWatertight, "the test solid itself must be closed")
+
+        for trim in [Float(2), 5, 9] {
+            let cut = torus.flatBase(trimMM: trim)
+            XCTAssertTrue(SurfaceReport(cut).isWatertight, "trim \(trim)mm")
+
+            // Every triangle on the bed must lie in the annulus, none across the hole.
+            let z = 10 - trim
+            let innerRadius = 30 - (100 - z * z).squareRoot()
+            var nearest = Float.greatestFiniteMagnitude
+            for t in 0..<cut.triangleCount {
+                let p = (0..<3).map { cut.vertices[Int(cut.indices[t * 3 + $0])] }
+                guard p.allSatisfy({ abs($0.z) < 1e-4 }) else { continue }
+                let centroid = (p[0] + p[1] + p[2]) / 3
+                nearest = min(nearest, simd_length(SIMD2(centroid.x, centroid.y)))
+            }
+            XCTAssertGreaterThan(nearest, innerRadius * 0.95, "trim \(trim)mm: the cap covers the hole")
+        }
+    }
+
+    /// A footprint whose centre lies outside it. A fan from the centre would reach across
+    /// the notch.
+    func testNonConvexFootprintIsCappedExactly() {
+        let block = Solids.uBlock(height: 20)
+        XCTAssertEqual(SurfaceReport(block).volumeMM3, 700 * 20, accuracy: 0.01)
+
+        let report = SurfaceReport(block.flatBase(trimMM: 5))
+        XCTAssertTrue(report.isWatertight)
+        XCTAssertEqual(report.volumeMM3, 700 * 15, accuracy: 0.01)
+    }
+
     /// Object Capture meshes are not guaranteed closed. The cut cannot repair that, but
     /// it must not make it worse by introducing non-manifold geometry.
     func testCuttingAnOpenMeshAddsNoNonManifoldGeometry() {

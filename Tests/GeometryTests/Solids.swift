@@ -66,4 +66,46 @@ enum Solids {
         }
         return MeshData.seated(vertices: full.vertices, indices: indices)
     }
+
+    /// A ring lying flat. Any cut below its middle leaves an annulus: an outer rim loop
+    /// with a second one inside it that has to stay open, like a bowl's foot ring.
+    static func torus(major R: Float, minor r: Float, majorSegments: Int = 48, minorSegments: Int = 24) -> MeshData {
+        var vertices: [SIMD3<Float>] = []
+        for i in 0..<majorSegments {
+            let u = 2 * Float.pi * Float(i) / Float(majorSegments)
+            for j in 0..<minorSegments {
+                let w = 2 * Float.pi * Float(j) / Float(minorSegments)
+                vertices.append(SIMD3((R + r * cos(w)) * cos(u), (R + r * cos(w)) * sin(u), r * sin(w)))
+            }
+        }
+        func at(_ i: Int, _ j: Int) -> UInt32 { UInt32((i % majorSegments) * minorSegments + j % minorSegments) }
+        var indices: [UInt32] = []
+        for i in 0..<majorSegments {
+            for j in 0..<minorSegments {
+                let a = at(i, j), b = at(i + 1, j), c = at(i + 1, j + 1), d = at(i, j + 1)
+                indices += [a, b, c, a, c, d]
+            }
+        }
+        return MeshData.seated(vertices: vertices, indices: indices)
+    }
+
+    /// A U-shaped block, 30 x 30 with a 10 x 20 notch: 700 mm² in plan. Its centre lies
+    /// in the notch, outside the outline, which is what a fan cap gets wrong.
+    static func uBlock(height h: Float) -> MeshData {
+        let outline: [SIMD2<Float>] = [SIMD2(0, 0), SIMD2(30, 0), SIMD2(30, 30), SIMD2(20, 30),
+                                       SIMD2(20, 10), SIMD2(10, 10), SIMD2(10, 30), SIMD2(0, 30)]
+        let plan: [UInt32] = [0, 1, 4, 1, 2, 4, 2, 3, 4, 0, 4, 5, 0, 5, 7, 5, 6, 7]
+        let n = UInt32(outline.count)
+        let vertices: [SIMD3<Float>] = outline.map { SIMD3($0.x, $0.y, 0) } + outline.map { SIMD3($0.x, $0.y, h) }
+        var indices: [UInt32] = []
+        for t in stride(from: 0, to: plan.count, by: 3) {
+            indices += [plan[t], plan[t + 2], plan[t + 1]]              // bottom, facing down
+            indices += [plan[t] + n, plan[t + 1] + n, plan[t + 2] + n]  // top, facing up
+        }
+        for a in 0..<n {
+            let b = (a + 1) % n
+            indices += [a, b, b + n, a, b + n, a + n]
+        }
+        return MeshData.seated(vertices: vertices, indices: indices)
+    }
 }

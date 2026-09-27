@@ -17,10 +17,12 @@ def read_binary_stl(path):
         data = f.read()
     if len(data) < 84:
         raise SystemExit(f"{path}: too short to be a binary STL")
-    if data[:5].lstrip().lower().startswith(b"solid") and len(data) < 200:
-        raise SystemExit(f"{path}: looks like an ASCII STL; this tool reads binary STL")
     count = struct.unpack_from("<I", data, 80)[0]
     expected = 84 + count * 50
+    # Binary headers may legally start with "solid" too, so only call it ASCII when the
+    # triangle count does not also account for the file size.
+    if len(data) != expected and data.lstrip()[:5].lower() == b"solid" and b"facet" in data[:1000]:
+        raise SystemExit(f"{path}: looks like an ASCII STL; this tool reads binary STL")
     if len(data) != expected:
         print(f"  note: file is {len(data)} bytes, header implies {expected} "
               f"({count} triangles) -- reading what is there")

@@ -35,7 +35,27 @@ struct ScanFolder: Identifiable, Hashable, Sendable {
             .sorted { $0.name > $1.name }
     }
 
+    /// Scans that never got a model: capture failed, reconstruction failed, or the app
+    /// was killed part way. The app cannot resume them and does not list them, so their
+    /// photos would otherwise fill the device unseen.
+    ///
+    /// Anything created in the last minute is left alone: a scan started the moment the
+    /// home screen appeared has no model yet either, and must not be swept from under it.
+    static func removeIncomplete() {
+        let cutoff = Date().addingTimeInterval(-60)
+        let urls = (try? FileManager.default.contentsOfDirectory(at: rootURL, includingPropertiesForKeys: [.creationDateKey])) ?? []
+        for scan in urls.map(ScanFolder.init(url:)) where !scan.hasModel {
+            guard let created = try? scan.url.resourceValues(forKeys: [.creationDateKey]).creationDate,
+                  created < cutoff else { continue }
+            scan.delete()
+        }
+    }
+
     func delete() {
         try? FileManager.default.removeItem(at: url)
+    }
+
+    func deleteCheckpoints() {
+        try? FileManager.default.removeItem(at: checkpointsURL)
     }
 }

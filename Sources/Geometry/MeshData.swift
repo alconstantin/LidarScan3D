@@ -190,40 +190,38 @@ struct MeshData: Sendable {
 
         guard !outIndices.isEmpty else { return self }
 
-        // Chain the rim into closed loops and fan each one from its own centre. Scanned
-        // cross-sections are near-convex, and a per-loop fan keeps objects that cut into
-        // several pieces (a handle, two legs) capped separately rather than bridged.
+        // Chain the rim into closed loops. An object that cuts into several pieces (a
+        // handle, two legs) gives several loops, and a hollow or ring-footed one (a bowl,
+        // a vase) gives loops inside loops; the cap has to respect both.
         var startingAt: [PlanarKey: [Int]] = [:]
         for (i, edge) in rim.enumerated() {
             startingAt[PlanarKey(edge.from), default: []].append(i)
         }
         var used = [Bool](repeating: false, count: rim.count)
+        var loops: [[CapTriangulation.Point]] = []
 
         for seed in rim.indices where !used[seed] {
-            var loop: [SIMD3<Float>] = []
+            var loop: [CapTriangulation.Point] = []
             var current = seed
             while !used[current] {
                 used[current] = true
-                loop.append(rim[current].from)
+                let from = rim[current].from
+                loop.append(CapTriangulation.Point(Double(from.x), Double(from.y)))
                 guard let candidates = startingAt[PlanarKey(rim[current].to)],
                       let next = candidates.first(where: { !used[$0] }) else { break }
                 current = next
             }
-            guard loop.count >= 3 else { continue }
+            if loop.count >= 3 { loops.append(loop) }
+        }
 
-            var centre = loop.reduce(SIMD3<Float>.zero, +) / Float(loop.count)
-            centre.z = cut
-
-            for i in loop.indices {
-                let p = loop[i], q = loop[(i + 1) % loop.count]
-                // This cap is the underside of the print, so force every triangle to face
-                // down rather than trusting the rim's direction.
-                if simd_cross(q - p, centre - p).z < 0 {
-                    emit(p, q, centre)
-                } else {
-                    emit(q, p, centre)
-                }
-            }
+        // The triangulation winds counter-clockwise seen from above. This cap is the
+        // underside of the print, so every triangle is emitted reversed to face the bed,
+        // whatever direction the rim happened to run in.
+        func onPlane(_ p: CapTriangulation.Point) -> SIMD3<Float> {
+            SIMD3(Float(p.x), Float(p.y), cut)
+        }
+        for (p, q, r) in CapTriangulation.triangulate(loops) {
+            emit(onPlane(p), onPlane(r), onPlane(q))
         }
 
         return MeshData.seated(vertices: outVertices, indices: outIndices)
