@@ -29,9 +29,10 @@ true millimetre scale, a flat base, and STL export.
 
 ## Requirements
 
-- An iPhone or iPad **Pro** with a LiDAR sensor, running **iOS 17 or later**.
-  Object Capture needs the depth sensor; the app disables scanning and says so on
-  hardware that lacks it.
+- An iPhone **Pro** with a LiDAR sensor (iPhone 12 Pro or later), running **iOS 17 or
+  later**. Object Capture needs the depth sensor; the app disables scanning and says so
+  on hardware that lacks it. The app is built for iPhone; an iPad Pro runs it in
+  iPhone compatibility mode.
 - To build: macOS with Xcode 16 and [XcodeGen](https://github.com/yonaskolb/XcodeGen).
 
 ## Getting the app
@@ -110,10 +111,14 @@ silhouette down rather than remove it:
 
 1. Triangles straddling the cut plane are split, with winding preserved by a cyclic
    rotation of their vertices.
-2. The rim edges left along the plane are chained into closed loops, and each loop is
-   capped by a fan from its own centre. An object that cuts into several pieces — two
-   legs, a handle — gets independent caps instead of one bridging them.
-3. Cap triangles are forced to face downwards rather than trusting rim direction.
+2. The rim edges left along the plane are chained into closed loops. Loops nested
+   inside other loops are holes: a bowl or vase on a foot ring cuts into a ring, and
+   its centre must stay open. Holes are bridged into the loop around them and the
+   result is ear-clipped (`Sources/Geometry/CapTriangulation.swift`), so non-convex
+   footprints — a U, a C, a bracket — are capped exactly rather than fanned across. An
+   object that cuts into several pieces — two legs, a handle — gets independent caps.
+3. Which loops are holes is decided by nesting, and the whole cap is wound to face
+   downwards, rather than trusting rim direction.
 4. A plane landing exactly on an existing vertex collapses triangles onto a line or a
    point. Those slivers and their zero-length rim edges are dropped; leaving them in
    breaks watertightness. Vertices are matched at micron precision, so anything within
@@ -122,8 +127,9 @@ silhouette down rather than remove it:
 The cut is covered by `Tests/GeometryTests`, which checks that every edge is shared
 by exactly two triangles in the same two directions, and that signed volumes match
 analytic values. Sphere cuts (including planes landing exactly on vertex rings), a
-two-legged object whose caps must stay independent, and an open mesh that the cut must
-not make worse all run on every push. Because `Sources/Geometry` carries no UIKit
+two-legged object whose caps must stay independent, a ring whose hole must stay open, a
+U-shaped block whose centre lies outside it, and an open mesh that the cut must not make
+worse all run on every push. Because `Sources/Geometry` carries no UIKit
 dependency, the tests compile the app's own source rather than a copy:
 
 ```sh
@@ -147,6 +153,7 @@ every side is reachable.
 | `Sources/ReconstructionView.swift` | Reconstruction progress |
 | `Sources/ResultView.swift` | Preview, orientation, scale, flat base, export |
 | `Sources/Geometry/MeshData.swift` | Mesh loading, plane cut, STL/OBJ writers |
+| `Sources/Geometry/CapTriangulation.swift` | Triangulates the flat base, holes included |
 | `Sources/MeshDataPreview.swift` | SceneKit preview geometry (the only UIKit part of the mesh code) |
 | `Sources/ScanFolder.swift` | On-disk layout of a scan |
 | `Tests/GeometryTests/` | Geometry tests, run on macOS by `swift test` |
@@ -154,8 +161,10 @@ every side is reachable.
 | `project.yml` | XcodeGen spec — edit this, not the `.xcodeproj` |
 | `Package.swift` | Builds `Sources/Geometry` alone, so CI can test it |
 
-Each scan lives in `Documents/Scans/<name>/` holding `Images`, `Checkpoints`,
-`Exports` and `model.usdz`.
+Each scan lives in `Documents/Scans/<name>/` holding `Images`, `Exports` and
+`model.usdz`, plus `Checkpoints` while it is being reconstructed. Scans that never
+produced a model (a failed or interrupted capture or reconstruction) cannot be resumed,
+and are deleted rather than left to fill the device.
 
 ## Known limitations
 
@@ -178,6 +187,8 @@ Each scan lives in `Documents/Scans/<name>/` holding `Images`, `Checkpoints`,
 - **No mesh repair, decimation or hollowing.** Meshes are exported at the resolution
   Object Capture produces.
 - **iPhone only, portrait only.**
+- **Not yet App Store ready.** There is no app icon, and the bundle identifier and
+  signing are set up for sideloading.
 
 ## License
 

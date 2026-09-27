@@ -21,6 +21,8 @@ final class AppModel {
     @ObservationIgnored private var currentScan: ScanFolder?
     @ObservationIgnored private var userCancelledCapture = false
     @ObservationIgnored private let reconstruction = SessionBox()
+    /// Holds the capture session for as long as it runs, so it has to be stopped by hand.
+    @ObservationIgnored private var feedbackTask: Task<Void, Never>?
 
     /// Object Capture reports itself supported on some hardware that cannot feed it
     /// depth. Both have to hold, or capture starts and then quietly produces nothing.
@@ -80,11 +82,15 @@ final class AppModel {
                 switch state {
                 case .completed:
                     // Leaving the capturing phase releases the capture session (and its memory)
-                    // before reconstruction starts.
+                    // before reconstruction starts. The feedback loop holds it too, and a
+                    // finished session stops sending feedback, so that loop would otherwise
+                    // wait forever with the session in hand.
+                    self.stopObservingFeedback()
                     self.startReconstruction()
                     return
                 case .failed(let error):
                     captureLog.error("capture failed: \(String(describing: error), privacy: .public)")
+                    self.stopObservingFeedback()
                     if self.userCancelledCapture {
                         self.discardCurrentScan()
                         self.phase = .home
@@ -101,13 +107,19 @@ final class AppModel {
 
     /// Feedback is the only signal that says why capture is not progressing.
     private func observeFeedback(_ session: ObjectCaptureSession) {
-        Task { [weak self] in
+        feedbackTask?.cancel()
+        feedbackTask = Task { [weak self] in
             for await feedback in session.feedbackUpdates {
                 guard self != nil else { return }
                 let names = feedback.map(\.label).sorted().joined(separator: ",")
                 captureLog.notice("feedback -> [\(names, privacy: .public)]")
             }
         }
+    }
+
+    private func stopObservingFeedback() {
+        feedbackTask?.cancel()
+        feedbackTask = nil
     }
 
     // MARK: Reconstruction
@@ -166,6 +178,9 @@ final class AppModel {
                     break
                 }
             }
+            // The stream is not documented to end without one of the two messages above,
+            // but if it does the reconstruction screen would wait on it forever.
+            await fail("Reconstruction stopped without producing a model.")
         } catch {
             await fail("Reconstruction failed: \(error.localizedDescription)")
         }
@@ -177,6 +192,10 @@ final class AppModel {
     }
 
     private func finish(with scan: ScanFolder) {
+        // Checkpoints only exist to speed up a reconstruction; once the model is written
+        // they are hundreds of megabytes of nothing.
+        scan.deleteCheckpoints()
+        currentScan = nil
         phase = .result(scan)
     }
 
@@ -186,6 +205,9 @@ final class AppModel {
     }
 
     private func fail(_ message: String) {
+        // Nothing in the app can pick a scan up again without its model, and its photos
+        // would sit invisibly in Documents taking up hundreds of megabytes.
+        discardCurrentScan()
         phase = .failed(message)
     }
 
