@@ -29,7 +29,8 @@ true millimetre scale, a flat base, and STL export.
   Lab's A1 mini, A1, P1/P2/X1 and H2D are built in.
 - **Sample scan.** A bundled vase lets you try everything after the scan itself on
   any iPhone, with or without LiDAR.
-- **Export.** Binary STL and OBJ in millimetres for your slicer, or the textured
+- **Export.** 3MF, Bambu Studio's native format, placed on the chosen printer's plate;
+  binary STL and OBJ in millimetres for any slicer, or the textured
   USDZ for viewing and AR. Share by AirDrop, save to Files, or open straight in a
   slicer app.
 
@@ -98,7 +99,9 @@ the build plate* mean the file will open in Bambu Studio without a repair prompt
 is too big, *Scale to fit* picks the largest size that fits. Holes in a scan usually
 sit in the underside, so if the check finds any, raise the flat-base trim first.
 
-**Export.** *Export STL* writes a binary STL in millimetres, ready for a slicer. Files
+**Export.** *Export 3MF* writes a 3MF package for Bambu Studio, PrusaSlicer or
+OrcaSlicer, centred on the chosen printer's plate. *Export STL* writes a binary STL in
+millimetres for any slicer. Files
 land in `Exports` inside the scan's folder and are reachable from the Files app under
 **On My iPhone → LiDAR Scan 3D**.
 
@@ -148,7 +151,9 @@ swift test
 ```
 
 The app runs the same checks on every model it shows (`Sources/Geometry/PrintReport.swift`),
-and `tools/check_stl.py` runs them against an exported `.stl`. Both compare vertices by
+and `tools/check_stl.py` runs them against an exported `.stl` or `.3mf`. CI exports the
+sample in both formats and audits them with it, reading the 3MF with Python's own
+`zipfile` and XML parser rather than the app's code. Both compare vertices by
 position at micron precision. Meshes are also welded that way on load, because Object
 Capture splits a vertex wherever a texture seam runs through it, and those splits would
 otherwise count as holes.
@@ -193,10 +198,11 @@ Still to do under the publishing Apple Developer account:
 | `Sources/Geometry/CapTriangulation.swift` | Triangulates the flat base, holes included |
 | `Sources/Geometry/PrintReport.swift` | Watertightness check shown before export |
 | `Sources/Geometry/BuildVolume.swift` | Printer presets and the fit-to-plate calculation |
+| `Sources/Geometry/ThreeMF.swift` | 3MF export, with the small ZIP writer it needs |
 | `Sources/MeshDataPreview.swift` | SceneKit preview geometry (the only UIKit part of the mesh code) |
 | `Sources/ScanFolder.swift` | On-disk layout of a scan |
 | `Tests/GeometryTests/` | Geometry tests, run on macOS by `swift test` |
-| `tools/check_stl.py` | Audits an exported STL for printability |
+| `tools/check_stl.py` | Audits an exported STL or 3MF for printability |
 | `Resources/` | App icon, privacy manifest and the sample scan |
 | `tools/make_sample.py` | Generates the sample scan, `Resources/SampleVase.obj` |
 | `project.yml` | XcodeGen spec — edit this, not the `.xcodeproj` |

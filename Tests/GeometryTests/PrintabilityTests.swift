@@ -77,14 +77,8 @@ final class PrintabilityTests: XCTestCase {
 
     // MARK: The bundled sample
 
-    /// Read through MeshData.load, the same ModelIO path a real scan takes.
-    private func loadSample() throws -> MeshData {
-        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
-        return try MeshData.load(from: root.appendingPathComponent("Resources/SampleVase.obj"))
-    }
-
     func testSampleLoadsAtRealSizeAndIsWatertight() throws {
-        let sample = try loadSample()
+        let sample = try Solids.sampleVase()
         XCTAssertEqual(sample.sizeMM.x, 77, accuracy: 0.05)
         XCTAssertEqual(sample.sizeMM.y, 77, accuracy: 0.05)
         XCTAssertEqual(sample.sizeMM.z, 90.8, accuracy: 0.05, "metres, Y up, came in as millimetres, Z up")
@@ -94,7 +88,7 @@ final class PrintabilityTests: XCTestCase {
     /// The app's default trim cuts through the foot ring. Its cap must leave the
     /// recessed base open, as it is on the real object.
     func testSampleFlatBaseCutsThroughTheFootRing() throws {
-        let sample = try loadSample()
+        let sample = try Solids.sampleVase()
         let cut = sample.flatBase(trimMM: sample.sizeMM.z * 0.02)
         XCTAssertTrue(cut.printReport().isWatertight)
 

@@ -108,4 +108,11 @@ enum Solids {
         }
         return MeshData.seated(vertices: vertices, indices: indices)
     }
+
+    /// The scan bundled with the app, read through MeshData.load: the same ModelIO
+    /// path a real scan takes.
+    static func sampleVase() throws -> MeshData {
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        return try MeshData.load(from: root.appendingPathComponent("Resources/SampleVase.obj"))
+    }
 }
