@@ -33,7 +33,7 @@ struct ResultView: View {
     @State private var cutReport: PrintReport?
     @AppStorage("printer") private var printer: Printer = .bambuP1X1
 
-    private enum Format { case stl, obj }
+    private enum Format { case threeMF, stl, obj }
 
     /// The slider's range. Calibration clamps to it too, so the readout and the
     /// control can never disagree.
@@ -188,9 +188,12 @@ struct ResultView: View {
                          : "Scans usually reconstruct a rough, uneven underside. A flat base cuts it off so the print adheres to the bed and stands straight.")
                 }
 
-                Section("Export") {
+                Section {
+                    Button { export(.threeMF) } label: {
+                        Label("Export 3MF (Bambu Studio, PrusaSlicer, Orca)", systemImage: "printer.fill")
+                    }
                     Button { export(.stl) } label: {
-                        Label("Export STL (for your slicer)", systemImage: "printer")
+                        Label("Export STL (any slicer)", systemImage: "printer")
                     }
                     Button { export(.obj) } label: {
                         Label("Export OBJ", systemImage: "cube")
@@ -200,6 +203,10 @@ struct ResultView: View {
                             Label("Share USDZ (textured, for AR/viewing)", systemImage: "arkit")
                         }
                     }
+                } header: {
+                    Text("Export")
+                } footer: {
+                    Text("3MF states its units and opens centred on the chosen printer's plate. STL is the universal fallback.")
                 }
                 .disabled(isExporting || isPreparing)
             } else if errorMessage == nil {
@@ -395,11 +402,19 @@ struct ResultView: View {
         let suffix = flatBase ? String(format: " flat %.1fmm", Double(printedTrimMM)) : ""
         let baseName = "\(scan.name) \(Int(scalePercent.rounded()))pct\(suffix)"
         let exportsURL = scan.exportsURL
+        let title = scan.name
+        // Plate coordinates start at the front left corner. With no known printer the
+        // model stays at the origin, and the slicer places it.
+        let plateCentre = printer.buildVolume.map { SIMD2($0.width / 2, $0.depth / 2) } ?? .zero
 
         Task {
             do {
                 let url = try await Task.detached { () throws -> URL in
                     switch format {
+                    case .threeMF:
+                        let url = Self.uniqueURL(in: exportsURL, name: baseName, ext: "3mf")
+                        try mesh.write3MF(to: url, scale: scale, title: title, plateCentreMM: plateCentre)
+                        return url
                     case .stl:
                         let url = Self.uniqueURL(in: exportsURL, name: baseName, ext: "stl")
                         try mesh.writeBinarySTL(to: url, scale: scale)

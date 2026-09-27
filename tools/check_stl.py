@@ -1,15 +1,21 @@
 #!/usr/bin/env python3
-"""Audit an exported STL for printability.
+"""Audit an exported STL or 3MF for printability.
 
 Runs the same checks used to verify the flat-base plane cut against synthetic
-meshes, but on a real scan. No dependencies -- plain Python 3.
+meshes, but on a real scan. No dependencies -- plain Python 3. A 3MF is read with
+Python's own zipfile and XML parser, so it also checks the package is well formed.
 
-    python3 check_stl.py "MyScan 100pct flat.stl"
+    python3 check_stl.py "MyScan 100pct flat.stl" "MyScan 100pct flat.3mf"
 """
 import struct
 import sys
 import math
+import zipfile
+import xml.etree.ElementTree as ET
 from collections import defaultdict
+
+CORE_3MF = "http://schemas.microsoft.com/3dmanufacturing/core/2015/02"
+MODEL_REL_3MF = "http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel"
 
 
 def read_binary_stl(path):
@@ -36,8 +42,40 @@ def read_binary_stl(path):
     return tris
 
 
+def read_3mf(path):
+    """Triangles of every object in a 3MF, in the object's own coordinates."""
+    try:
+        package = zipfile.ZipFile(path)
+    except zipfile.BadZipFile:
+        raise SystemExit(f"{path}: not a ZIP archive, so not a 3MF")
+    with package:
+        corrupt = package.testzip()  # checks every entry's CRC
+        if corrupt:
+            raise SystemExit(f"{path}: entry {corrupt} is corrupt")
+        names = package.namelist()
+        for required in ("[Content_Types].xml", "_rels/.rels"):
+            if required not in names:
+                raise SystemExit(f"{path}: missing {required}")
+        rels = ET.fromstring(package.read("_rels/.rels"))
+        targets = [r.get("Target") for r in rels if r.get("Type") == MODEL_REL_3MF]
+        if not targets:
+            raise SystemExit(f"{path}: no 3D model relationship in _rels/.rels")
+        model = ET.fromstring(package.read(targets[0].lstrip("/")))
+    unit = model.get("unit", "millimeter")
+    if unit != "millimeter":
+        print(f"  note: units are {unit}, not millimetres; sizes below are in {unit}")
+    ns = {"m": CORE_3MF}
+    tris = []
+    for obj in model.iterfind(".//m:object", ns):
+        verts = [(float(v.get("x")), float(v.get("y")), float(v.get("z")))
+                 for v in obj.iterfind("m:mesh/m:vertices/m:vertex", ns)]
+        for t in obj.iterfind("m:mesh/m:triangles/m:triangle", ns):
+            tris.append(tuple(verts[int(t.get(k))] for k in ("v1", "v2", "v3")))
+    return tris
+
+
 def audit(path, weld_microns=1):
-    tris = read_binary_stl(path)
+    tris = read_3mf(path) if path.lower().endswith(".3mf") else read_binary_stl(path)
     if not tris:
         raise SystemExit(f"{path}: no triangles")
 
