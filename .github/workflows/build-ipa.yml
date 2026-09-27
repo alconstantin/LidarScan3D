@@ -34,6 +34,16 @@ jobs:
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
             build
 
+      # App Review rejects a build without these, and a wiring mistake in project.yml
+      # would otherwise only show up there.
+      - name: Check App Store requirements
+        run: |
+          app=build/Build/Products/Release-iphoneos/LidarScan3D.app
+          test -f "$app/PrivacyInfo.xcprivacy" || { echo "::error::PrivacyInfo.xcprivacy is not in the app bundle"; exit 1; }
+          icon=$(plutil -extract CFBundleIcons.CFBundlePrimaryIcon.CFBundleIconName raw "$app/Info.plist" 2>/dev/null || true)
+          [ "$icon" = "AppIcon" ] || { echo "::error::No app icon in Info.plist (got '$icon')"; exit 1; }
+          [ "$(plutil -extract ITSAppUsesNonExemptEncryption raw "$app/Info.plist")" = "false" ] || { echo "::error::ITSAppUsesNonExemptEncryption missing"; exit 1; }
+
       - name: Package IPA
         run: |
           mkdir Payload

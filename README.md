@@ -143,6 +143,26 @@ original mesh, so repeated turns accumulate in the quaternion and never in the
 geometry. Quarter turns about X and Y generate all 24 axis-aligned orientations, so
 every side is reachable.
 
+### Releasing to the App Store
+
+The build carries what App Review checks for, and CI fails if any of it goes missing
+from the app bundle:
+
+- an app icon (`Resources/Assets.xcassets`, a single 1024 × 1024 opaque PNG)
+- a privacy manifest (`Resources/PrivacyInfo.xcprivacy`): no tracking, no collected
+  data, and the one required-reason API used — reading scan folders' creation dates
+- `ITSAppUsesNonExemptEncryption = NO`, so uploads skip the export compliance question
+
+Still to do under the publishing Apple Developer account:
+
+1. Set `PRODUCT_BUNDLE_IDENTIFIER` and `DEVELOPMENT_TEAM` in `project.yml` to the
+   account's own, then `xcodegen generate` and archive from Xcode.
+2. In App Store Connect: screenshots (6.9" and 6.5" iPhone), description, keywords,
+   support URL, privacy policy URL, and the privacy questionnaire — answer
+   *Data Not Collected*, which matches the manifest.
+3. Note for App Review that scanning needs a LiDAR iPhone (12 Pro or later). The app
+   says so on other devices rather than failing.
+
 ### Project layout
 
 | Path | |
@@ -158,6 +178,7 @@ every side is reachable.
 | `Sources/ScanFolder.swift` | On-disk layout of a scan |
 | `Tests/GeometryTests/` | Geometry tests, run on macOS by `swift test` |
 | `tools/check_stl.py` | Audits an exported STL for printability |
+| `Resources/` | App icon and privacy manifest |
 | `project.yml` | XcodeGen spec — edit this, not the `.xcodeproj` |
 | `Package.swift` | Builds `Sources/Geometry` alone, so CI can test it |
 
@@ -187,12 +208,12 @@ and are deleted rather than left to fill the device.
 - **No mesh repair, decimation or hollowing.** Meshes are exported at the resolution
   Object Capture produces.
 - **iPhone only, portrait only.**
-- **Not yet App Store ready.** There is no app icon, and the bundle identifier and
-  signing are set up for sideloading.
+- **The app icon is a placeholder**, generated rather than designed.
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+Proprietary — all rights reserved. See [LICENSE](LICENSE). No use, copying or
+distribution is permitted without a written agreement with the copyright holder.
 
-Object Capture, RealityKit, SceneKit and ModelIO are Apple frameworks, used under
-Apple's terms; this licence covers the code in this repository only.
+Object Capture, RealityKit, SceneKit, ARKit and ModelIO are Apple frameworks, used under
+Apple's terms; this notice covers the code and assets in this repository only.
