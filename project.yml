@@ -7,7 +7,12 @@ targets:
   LidarScan3D:
     type: application
     platform: iOS
-    sources: [Sources]
+    sources:
+      - path: Sources
+      - path: Resources/Assets.xcassets
+      # Required by App Review; declares no tracking and the one required-reason API used.
+      - path: Resources/PrivacyInfo.xcprivacy
+        buildPhase: resources
     scheme: {}
     info:
       path: Sources/Info.plist
@@ -22,8 +27,14 @@ targets:
         # Makes scans and exports visible in the Files app (On My iPhone > LiDAR Scan 3D)
         UIFileSharingEnabled: true
         LSSupportsOpeningDocumentsInPlace: true
+        # Only Apple's built-in encryption (HTTPS is not even used), so no export
+        # compliance documentation is needed. Saves the question on every upload.
+        ITSAppUsesNonExemptEncryption: false
     settings:
       base:
+        # Change both to the publishing account's own before the first App Store upload.
         PRODUCT_BUNDLE_IDENTIFIER: com.alconstantin.lidarscan3d
+        DEVELOPMENT_TEAM: ""
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         TARGETED_DEVICE_FAMILY: "1"
         SWIFT_VERSION: "5.0"

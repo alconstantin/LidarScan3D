@@ -61,6 +61,13 @@ struct ResultView: View {
         Float(trimFraction) * (oriented?.sizeMM.z ?? 0)
     }
 
+    /// The trim as it comes out of the printer. The cut itself happens before scaling,
+    /// but every size the user reads has to be at print scale, or the trim and the
+    /// dimensions above it disagree as soon as the scale moves off 100 %.
+    private var printedTrimMM: Float {
+        trimMM * Float(scalePercent / 100)
+    }
+
     var body: some View {
         List {
             Section {
@@ -128,7 +135,7 @@ struct ResultView: View {
                     if flatBase {
                         VStack(alignment: .leading) {
                             HStack {
-                                Text("Trim from bottom: \(mm(trimMM)) mm")
+                                Text("Trim from bottom: \(mm(printedTrimMM)) mm")
                                 if isPreparing {
                                     Spacer()
                                     ProgressView().controlSize(.small)
@@ -308,7 +315,7 @@ struct ResultView: View {
         let scale = Float(scalePercent / 100)
         // The trim goes in the name: without it, two different cuts collide. The
         // orientation cannot be named usefully, so uniqueURL catches what is left.
-        let suffix = flatBase ? String(format: " flat %.1fmm", Double(trimMM)) : ""
+        let suffix = flatBase ? String(format: " flat %.1fmm", Double(printedTrimMM)) : ""
         let baseName = "\(scan.name) \(Int(scalePercent.rounded()))pct\(suffix)"
         let exportsURL = scan.exportsURL
 
