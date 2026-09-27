@@ -1,6 +1,7 @@
 import Foundation
 
-/// One scan on disk: Documents/Scans/<name>/{Images, Checkpoints, Exports, model.usdz}
+/// One scan on disk: Documents/Scans/<name>/{Images, Checkpoints, Exports, model.usdz}.
+/// The bundled sample has a plain model.obj instead of a textured USDZ.
 struct ScanFolder: Identifiable, Hashable, Sendable {
     let url: URL
 
@@ -9,8 +10,21 @@ struct ScanFolder: Identifiable, Hashable, Sendable {
     var imagesURL: URL { url.appendingPathComponent("Images", isDirectory: true) }
     var checkpointsURL: URL { url.appendingPathComponent("Checkpoints", isDirectory: true) }
     var exportsURL: URL { url.appendingPathComponent("Exports", isDirectory: true) }
-    var modelURL: URL { url.appendingPathComponent("model.usdz") }
+    /// model.usdz for a real scan, and where reconstruction writes; model.obj for the sample.
+    var modelURL: URL {
+        let usdz = url.appendingPathComponent("model.usdz")
+        let obj = url.appendingPathComponent("model.obj")
+        if !FileManager.default.fileExists(atPath: usdz.path), FileManager.default.fileExists(atPath: obj.path) {
+            return obj
+        }
+        return usdz
+    }
     var hasModel: Bool { FileManager.default.fileExists(atPath: modelURL.path) }
+    /// Only a real scan carries photographs of the object to share for viewing and AR.
+    var isTextured: Bool { modelURL.pathExtension == "usdz" }
+    var isSample: Bool { name == Self.sampleName }
+
+    static let sampleName = "Sample vase"
 
     static var rootURL: URL {
         URL.documentsDirectory.appendingPathComponent("Scans", isDirectory: true)
@@ -33,6 +47,21 @@ struct ScanFolder: Identifiable, Hashable, Sendable {
             .map(ScanFolder.init(url:))
             .filter(\.hasModel)
             .sorted { $0.name > $1.name }
+    }
+
+    /// Copies the bundled sample into the scans folder, where it behaves like any other
+    /// scan: it can be turned, cut, exported and deleted, and installed again after.
+    static func installSample() throws -> ScanFolder {
+        guard let source = Bundle.main.url(forResource: "SampleVase", withExtension: "obj") else {
+            throw CocoaError(.fileNoSuchFile)
+        }
+        let folder = ScanFolder(url: rootURL.appendingPathComponent(sampleName, isDirectory: true))
+        try FileManager.default.createDirectory(at: folder.exportsURL, withIntermediateDirectories: true)
+        let model = folder.url.appendingPathComponent("model.obj")
+        if !FileManager.default.fileExists(atPath: model.path) {
+            try FileManager.default.copyItem(at: source, to: model)
+        }
+        return folder
     }
 
     /// Scans that never got a model: capture failed, reconstruction failed, or the app

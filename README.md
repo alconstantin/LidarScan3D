@@ -23,6 +23,12 @@ true millimetre scale, a flat base, and STL export.
 - **Orientation.** Quarter turns put any of the six sides against the print bed.
 - **Flat base.** Slices the ragged underside off and caps it flat, so the print
   adheres to the bed and stands straight.
+- **Ready-to-print check.** Before you export, the app says whether the model is
+  watertight (and if not, how many holes and bad edges it has), and whether it fits
+  your printer's build volume, with one tap to scale it down if it does not. Bambu
+  Lab's A1 mini, A1, P1/P2/X1 and H2D are built in.
+- **Sample scan.** A bundled vase lets you try everything after the scan itself on
+  any iPhone, with or without LiDAR.
 - **Export.** Binary STL and OBJ in millimetres for your slicer, or the textured
   USDZ for viewing and AR. Share by AirDrop, save to Files, or open straight in a
   slicer app.
@@ -87,6 +93,11 @@ model until the side you want to print on faces the grey bed. Enable *Flat base*
 raise the trim until the ragged underside is gone — the preview shows the actual cut.
 Set the scale, or tap *Match real size* and enter a measured dimension.
 
+**Check.** Under *Ready to print?*, pick your printer. A green *Watertight* and *Fits
+the build plate* mean the file will open in Bambu Studio without a repair prompt. If it
+is too big, *Scale to fit* picks the largest size that fits. Holes in a scan usually
+sit in the underside, so if the check finds any, raise the flat-base trim first.
+
 **Export.** *Export STL* writes a binary STL in millimetres, ready for a slicer. Files
 land in `Exports` inside the scan's folder and are reachable from the Files app under
 **On My iPhone → LiDAR Scan 3D**.
@@ -136,7 +147,11 @@ dependency, the tests compile the app's own source rather than a copy:
 swift test
 ```
 
-`tools/check_stl.py` runs the same checks against a real exported `.stl`.
+The app runs the same checks on every model it shows (`Sources/Geometry/PrintReport.swift`),
+and `tools/check_stl.py` runs them against an exported `.stl`. Both compare vertices by
+position at micron precision. Meshes are also welded that way on load, because Object
+Capture splits a vertex wherever a texture seam runs through it, and those splits would
+otherwise count as holes.
 
 **Orientation** is stored as a quaternion and always re-applied to the untouched
 original mesh, so repeated turns accumulate in the quaternion and never in the
@@ -150,7 +165,8 @@ from the app bundle:
 
 - an app icon (`Resources/Assets.xcassets`, a single 1024 × 1024 opaque PNG)
 - a privacy manifest (`Resources/PrivacyInfo.xcprivacy`): no tracking, no collected
-  data, and the one required-reason API used — reading scan folders' creation dates
+  data, and the two required-reason APIs used — reading scan folders' creation dates,
+  and UserDefaults to remember the chosen printer
 - `ITSAppUsesNonExemptEncryption = NO`, so uploads skip the export compliance question
 
 Still to do under the publishing Apple Developer account:
@@ -161,7 +177,8 @@ Still to do under the publishing Apple Developer account:
    support URL, privacy policy URL, and the privacy questionnaire — answer
    *Data Not Collected*, which matches the manifest.
 3. Note for App Review that scanning needs a LiDAR iPhone (12 Pro or later). The app
-   says so on other devices rather than failing.
+   says so on other devices rather than failing, and *Try the sample scan* on the
+   home screen shows the rest of the app on any iPhone.
 
 ### Project layout
 
@@ -174,11 +191,14 @@ Still to do under the publishing Apple Developer account:
 | `Sources/ResultView.swift` | Preview, orientation, scale, flat base, export |
 | `Sources/Geometry/MeshData.swift` | Mesh loading, plane cut, STL/OBJ writers |
 | `Sources/Geometry/CapTriangulation.swift` | Triangulates the flat base, holes included |
+| `Sources/Geometry/PrintReport.swift` | Watertightness check shown before export |
+| `Sources/Geometry/BuildVolume.swift` | Printer presets and the fit-to-plate calculation |
 | `Sources/MeshDataPreview.swift` | SceneKit preview geometry (the only UIKit part of the mesh code) |
 | `Sources/ScanFolder.swift` | On-disk layout of a scan |
 | `Tests/GeometryTests/` | Geometry tests, run on macOS by `swift test` |
 | `tools/check_stl.py` | Audits an exported STL for printability |
-| `Resources/` | App icon and privacy manifest |
+| `Resources/` | App icon, privacy manifest and the sample scan |
+| `tools/make_sample.py` | Generates the sample scan, `Resources/SampleVase.obj` |
 | `project.yml` | XcodeGen spec — edit this, not the `.xcodeproj` |
 | `Package.swift` | Builds `Sources/Geometry` alone, so CI can test it |
 

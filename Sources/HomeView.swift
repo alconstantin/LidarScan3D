@@ -3,9 +3,11 @@ import SwiftUI
 struct HomeView: View {
     @Environment(AppModel.self) private var model
     @State private var scans: [ScanFolder] = []
+    @State private var path: [ScanFolder] = []
+    @State private var sampleError: String?
 
     var body: some View {
-        NavigationStack {
+        NavigationStack(path: $path) {
             List {
                 Section {
                     Button {
@@ -34,20 +36,33 @@ struct HomeView: View {
                     tip("ruler", "Objects from about mug size to chair size work best. Very small parts (under ~5 cm) lose detail.")
                 }
 
-                Section("Your scans") {
+                Section {
                     if scans.isEmpty {
                         Text("No scans yet").foregroundStyle(.secondary)
                     }
                     ForEach(scans) { scan in
-                        NavigationLink(scan.name) { ResultView(scan: scan) }
+                        NavigationLink(scan.name, value: scan)
                     }
                     .onDelete { offsets in
                         offsets.forEach { scans[$0].delete() }
                         scans.remove(atOffsets: offsets)
                     }
+                    if !scans.contains(where: \.isSample) {
+                        Button { openSample() } label: {
+                            Label("Try the sample scan", systemImage: "cube")
+                        }
+                    }
+                    if let sampleError {
+                        Text(sampleError).font(.footnote).foregroundStyle(.red)
+                    }
+                } header: {
+                    Text("Your scans")
+                } footer: {
+                    Text("The sample is a vase on a foot ring. Turn it, give it a flat base and export it on any iPhone, LiDAR or not.")
                 }
             }
             .navigationTitle("LiDAR Scan 3D")
+            .navigationDestination(for: ScanFolder.self) { ResultView(scan: $0) }
             // Listing the folder stats every scan on disk, which does not belong
             // on the main thread once a few dozen have piled up. Scans that never
             // produced a model are cleared out on the way.
@@ -56,6 +71,19 @@ struct HomeView: View {
                     ScanFolder.removeIncomplete()
                     return ScanFolder.all()
                 }.value
+            }
+        }
+    }
+
+    private func openSample() {
+        Task {
+            do {
+                let sample = try await Task.detached { try ScanFolder.installSample() }.value
+                scans = await Task.detached { ScanFolder.all() }.value
+                sampleError = nil
+                path.append(sample)
+            } catch {
+                sampleError = "Could not open the sample: \(error.localizedDescription)"
             }
         }
     }

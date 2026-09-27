@@ -27,6 +27,11 @@ struct ResultView: View {
     @State private var shareItem: ShareItem?
     @State private var showingCalibration = false
     @State private var calibrationText = ""
+    /// Turning never changes whether a mesh is closed, so only loading and cutting
+    /// produce a report: one for the mesh as loaded, one for the latest cut.
+    @State private var loadedReport: PrintReport?
+    @State private var cutReport: PrintReport?
+    @AppStorage("printer") private var printer: Printer = .bambuP1X1
 
     private enum Format { case stl, obj }
 
@@ -46,6 +51,12 @@ struct ResultView: View {
     private var activeMesh: MeshData? {
         if flatBase, let flat { return flat }
         return oriented ?? mesh
+    }
+
+    /// Describes `activeMesh`, falling back the same way it does.
+    private var activeReport: PrintReport? {
+        if flatBase, flat != nil { return cutReport }
+        return loadedReport
     }
 
     /// The textured USDZ cannot show a turn or a cut, so anything that changes the
@@ -98,6 +109,27 @@ struct ResultView: View {
                     Text("Print size")
                 } footer: {
                     Text("LiDAR gives true scale, usually within a few mm. For an exact fit, measure the object's longest side with a ruler or calipers and tap Match real size.")
+                }
+
+                Section {
+                    Picker("Printer", selection: $printer) {
+                        ForEach(Printer.allCases) { Text($0.name).tag($0) }
+                    }
+                    if let volume = printer.buildVolume {
+                        plateFit(activeMesh, in: volume)
+                    }
+                    if let report = activeReport {
+                        watertightness(report)
+                    } else {
+                        Label("Checking the surface…", systemImage: "hourglass")
+                            .foregroundStyle(.secondary)
+                    }
+                } header: {
+                    Text("Ready to print?")
+                } footer: {
+                    if let report = activeReport, !report.isWatertight {
+                        Text("Scans are not always closed, and holes usually sit in the underside. Try a flat base, or raise its trim. Otherwise Bambu Studio offers Fix Model when it opens the file (on Windows), and most other slicers repair on import.")
+                    }
                 }
 
                 Section {
@@ -163,8 +195,10 @@ struct ResultView: View {
                     Button { export(.obj) } label: {
                         Label("Export OBJ", systemImage: "cube")
                     }
-                    Button { shareItem = ShareItem(url: scan.modelURL) } label: {
-                        Label("Share USDZ (textured, for AR/viewing)", systemImage: "arkit")
+                    if scan.isTextured {
+                        Button { shareItem = ShareItem(url: scan.modelURL) } label: {
+                            Label("Share USDZ (textured, for AR/viewing)", systemImage: "arkit")
+                        }
                     }
                 }
                 .disabled(isExporting || isPreparing)
@@ -199,6 +233,44 @@ struct ResultView: View {
         }
     }
 
+    @ViewBuilder
+    private func plateFit(_ mesh: MeshData, in volume: BuildVolume) -> some View {
+        let size = mesh.sizeMM * Float(scalePercent / 100)
+        if volume.fits(size) {
+            Label("Fits the build plate", systemImage: "checkmark.circle.fill")
+                .foregroundStyle(.green)
+        } else {
+            // Whole percent, rounded down, so the slider lands on a size that fits.
+            let fitting = (Double(volume.largestScale(for: mesh.sizeMM)) * 100).rounded(.down)
+            VStack(alignment: .leading, spacing: 8) {
+                Label("Too big for its \(Int(volume.width)) × \(Int(volume.depth)) × \(Int(volume.height)) mm build volume",
+                      systemImage: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.orange)
+                if fitting >= Self.scaleRange.lowerBound {
+                    Button("Scale to fit (\(Int(fitting)) %)") { scalePercent = fitting }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func watertightness(_ report: PrintReport) -> some View {
+        if report.isWatertight {
+            Label("Watertight: slices without repair", systemImage: "checkmark.seal.fill")
+                .foregroundStyle(.green)
+        } else {
+            let problems: [String?] = [
+                report.holeEdges > 0 ? "\(report.holeEdges.formatted()) edges around holes" : nil,
+                report.nonManifoldEdges > 0 ? "\(report.nonManifoldEdges.formatted()) non-manifold edges" : nil,
+                report.flippedEdges > 0 ? "\(report.flippedEdges.formatted()) edges between flipped faces" : nil,
+                report.degenerateTriangles > 0 ? "\(report.degenerateTriangles.formatted()) collapsed triangles" : nil,
+                report.volumeMM3 <= 0 ? "surface is inside out" : nil,
+            ]
+            Label("Not watertight: \(problems.compactMap { $0 }.joined(separator: ", "))", systemImage: "exclamationmark.triangle.fill")
+                .foregroundStyle(.orange)
+        }
+    }
+
     private func turnButton(_ title: String, _ symbol: String, axis: SIMD3<Float>, clockwise: Bool) -> some View {
         Button {
             orientation = MeshData.quarterTurn(about: axis, clockwise: clockwise) * orientation
@@ -224,9 +296,13 @@ struct ResultView: View {
             return loaded
         }.value
         do {
-            let loaded = try await Task.detached { try MeshData.load(from: url) }.value
+            let (loaded, report) = try await Task.detached { () throws -> (MeshData, PrintReport) in
+                let loaded = try MeshData.load(from: url)
+                return (loaded, loaded.printReport())
+            }.value
             mesh = loaded
             oriented = loaded
+            loadedReport = report
         } catch {
             errorMessage = "Could not read the model: \(error.localizedDescription)"
         }
@@ -247,11 +323,11 @@ struct ResultView: View {
             // The scene is built here too, not after the hop back. makeGeometry walks
             // every triangle to accumulate normals and then packs two vertex-sized
             // arrays, which on a scan-scale mesh is the most expensive step of the lot.
-            let result = await Task.detached { () -> (MeshData, MeshData?, SCNScene) in
+            let result = await Task.detached { () -> (MeshData, MeshData?, SCNScene, PrintReport?) in
                 let oriented = mesh.rotated(by: rotation)
-                guard fraction > 0 else { return (oriented, nil, Self.makeScene(for: oriented)) }
+                guard fraction > 0 else { return (oriented, nil, Self.makeScene(for: oriented), nil) }
                 let cut = oriented.flatBase(trimMM: oriented.sizeMM.z * fraction)
-                return (oriented, cut, Self.makeScene(for: cut))
+                return (oriented, cut, Self.makeScene(for: cut), cut.printReport())
             }.value
 
             // Turns are cheap but a cut on a large scan is not, so two quick taps can
@@ -261,6 +337,7 @@ struct ResultView: View {
             oriented = result.0
             flat = result.1
             generatedScene = result.2
+            cutReport = result.3
             isPreparing = false
         }
     }
