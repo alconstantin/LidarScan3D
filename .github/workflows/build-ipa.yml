@@ -34,6 +34,13 @@ jobs:
           brew install xcodegen
           xcodegen generate
 
+      # Runs from Xcode abort on RealityKit's shadow shader with Metal API Validation
+      # on (see project.yml). Fail here if the generated scheme stops turning it off.
+      - name: Check the scheme disables Metal API Validation
+        run: |
+          grep -q 'enableGPUValidationMode = "1"' LidarScan3D.xcodeproj/xcshareddata/xcschemes/LidarScan3D.xcscheme \
+            || { echo "::error::The LidarScan3D scheme runs with Metal API Validation on"; exit 1; }
+
       - name: Build (unsigned)
         run: |
           xcodebuild \
