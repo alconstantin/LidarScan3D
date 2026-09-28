@@ -46,23 +46,30 @@ true millimetre scale, a flat base, and STL export.
 
 ### Prebuilt
 
-Every push to `main` builds an unsigned `.ipa`. Open the
-[latest run](https://github.com/alconstantin/LidarScan3D/actions/workflows/build-ipa.yml?query=branch%3Amain),
-scroll to **Artifacts**, and download `LidarScan3D-ipa`. Unzip it once to get
-`LidarScan3D.ipa`. You must be signed in to GitHub to download artifacts, and they
-expire 90 days after the build.
+**Step-by-step install guide for testers: [INSTALL.md](INSTALL.md).**
+
+Download `LidarScan3D.ipa` from the
+[latest release](https://github.com/alconstantin/LidarScan3D/releases/latest).
+Every push to `main` also builds one, available under **Artifacts** of the
+[latest run](https://github.com/alconstantin/LidarScan3D/actions/workflows/build-ipa.yml?query=branch%3Amain)
+(GitHub sign-in required; expires after 90 days).
 
 The `.ipa` is unsigned, so it needs signing before it will install:
 
-- **On a Mac** — open the project in Xcode, sign in with your Apple ID under
-  Settings → Accounts, pick your device and run. Simplest path if you have one.
-- **On Windows** — [Sideloadly](https://sideloadly.io) with your Apple ID. Install
-  iTunes and iCloud from Apple's site rather than the Microsoft Store, or the device
-  drivers will be missing. Afterwards trust the certificate on the phone under
-  Settings → General → VPN & Device Management.
+- **On Windows or Mac** — [Sideloadly](https://sideloadly.io) with your Apple ID,
+  as described in [INSTALL.md](INSTALL.md).
+- **On a Mac with Xcode** — open the project in Xcode, sign in with your Apple ID
+  under Settings → Accounts, pick your device and run.
 
 A free Apple ID signs apps for **7 days**, after which the app stops launching and
 must be re-installed; a paid developer account extends that to a year.
+
+To publish a new release, push a version tag; CI builds the `.ipa` and attaches it:
+
+```sh
+git tag v1.1
+git push origin v1.1
+```
 
 ### Building from source
 

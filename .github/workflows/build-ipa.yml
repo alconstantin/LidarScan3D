@@ -4,7 +4,12 @@ on:
   workflow_dispatch:
   push:
     branches: [main]
+    # Pushing a version tag (v1.0, v1.1, ...) also publishes a GitHub Release.
+    tags: ['v*']
   pull_request:
+
+permissions:
+  contents: write
 
 jobs:
   build:
@@ -62,3 +67,10 @@ jobs:
         with:
           name: LidarScan3D-ipa
           path: LidarScan3D.ipa
+
+      - name: Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: LidarScan3D.ipa
+          generate_release_notes: true
