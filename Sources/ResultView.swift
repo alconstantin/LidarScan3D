@@ -27,6 +27,7 @@ struct ResultView: View {
     @State private var shareItem: ShareItem?
     @State private var showingCalibration = false
     @State private var calibrationText = ""
+    @State private var calibrationSide: MeasuredSide = .longest
     /// Turning never changes whether a mesh is closed, so only loading and cutting
     /// produce a report: one for the mesh as loaded, one for the latest cut.
     @State private var loadedReport: PrintReport?
@@ -101,14 +102,19 @@ struct ResultView: View {
                         Text("Scale: \(Int(scalePercent.rounded())) %")
                         Slider(value: $scalePercent, in: Self.scaleRange, step: 1)
                     }
-                    Button("Match real size…") {
-                        calibrationText = ""
-                        showingCalibration = true
+                    Menu("Match real size…") {
+                        ForEach(MeasuredSide.allCases) { side in
+                            Button(side.menuTitle) {
+                                calibrationSide = side
+                                calibrationText = ""
+                                showingCalibration = true
+                            }
+                        }
                     }
                 } header: {
                     Text("Print size")
                 } footer: {
-                    Text("LiDAR gives true scale, usually within a few mm. For an exact fit, measure the object's longest side with a ruler or calipers and tap Match real size.")
+                    Text("LiDAR gives true scale, usually within a few mm. For an exact fit, measure one side of the object with a ruler or calipers and tap Match real size.")
                 }
 
                 Section {
@@ -228,14 +234,14 @@ struct ResultView: View {
                     .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
             }
         }
-        .alert("Real longest side (mm)", isPresented: $showingCalibration) {
+        .alert("Real \(calibrationSide.noun) (mm)", isPresented: $showingCalibration) {
             TextField("e.g. 85", text: $calibrationText)
                 .keyboardType(.decimalPad)
             Button("Apply") { applyCalibration() }
             Button("Cancel", role: .cancel) {}
         } message: {
             if let activeMesh {
-                Text("The scan's longest side is currently \(mm(activeMesh.longestSideMM)) mm at 100 %.")
+                Text("The scan's \(calibrationSide.noun) is currently \(mm(calibrationSide.length(of: activeMesh))) mm at 100 %.")
             }
         }
     }
@@ -304,7 +310,9 @@ struct ResultView: View {
         }.value
         do {
             let (loaded, report) = try await Task.detached { () throws -> (MeshData, PrintReport) in
-                let loaded = try MeshData.load(from: url)
+                // Squared up once, here, so every size and turn downstream starts from
+                // a model whose sides run along X and Y rather than at the capture's heading.
+                let loaded = try MeshData.load(from: url).squaredUp()
                 return (loaded, loaded.printReport())
             }.value
             mesh = loaded
@@ -387,8 +395,10 @@ struct ResultView: View {
     private func applyCalibration() {
         guard let activeMesh,
               let real = Double(calibrationText.replacingOccurrences(of: ",", with: ".")),
-              real > 0, activeMesh.longestSideMM > 0 else { return }
-        let percent = real / Double(activeMesh.longestSideMM) * 100
+              real > 0 else { return }
+        let scanned = calibrationSide.length(of: activeMesh)
+        guard scanned > 0 else { return }
+        let percent = real / Double(scanned) * 100
         scalePercent = min(max(percent, Self.scaleRange.lowerBound), Self.scaleRange.upperBound)
     }
 
@@ -447,6 +457,42 @@ struct ResultView: View {
 
     private func mm(_ value: Float) -> String {
         value.formatted(.number.precision(.fractionLength(1)))
+    }
+}
+
+/// Which dimension a calibration measurement was taken along. The longest side is
+/// the easy default, but on a cube or anything with a noisy scan it can be a
+/// different side from the one the user measured.
+enum MeasuredSide: String, CaseIterable, Identifiable {
+    case longest, width, depth, height
+
+    var id: Self { self }
+
+    var menuTitle: String {
+        switch self {
+        case .longest: "I measured the longest side"
+        case .width: "I measured the width (X)"
+        case .depth: "I measured the depth (Y)"
+        case .height: "I measured the height (Z)"
+        }
+    }
+
+    var noun: String {
+        switch self {
+        case .longest: "longest side"
+        case .width: "width (X)"
+        case .depth: "depth (Y)"
+        case .height: "height (Z)"
+        }
+    }
+
+    func length(of mesh: MeshData) -> Float {
+        switch self {
+        case .longest: mesh.longestSideMM
+        case .width: mesh.sizeMM.x
+        case .depth: mesh.sizeMM.y
+        case .height: mesh.sizeMM.z
+        }
     }
 }
 

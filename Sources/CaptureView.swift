@@ -68,9 +68,15 @@ struct CaptureView: View {
             if session.userCompletedScanPass {
                 VStack(spacing: 10) {
                     Text("Scan pass complete!").font(.headline)
-                    Button("Flip object & scan the bottom") { session.beginNewScanPassAfterFlip() }
-                        .buttonStyle(.bordered)
-                    Button("Scan again from another height") { session.beginNewScanPass() }
+                    if isFlippable {
+                        Button("Flip object & scan the bottom") { beginPass(flipped: true) }
+                            .buttonStyle(.bordered)
+                    } else {
+                        Text("This object is too plain or symmetric to match up after a flip. Scan it again from another height instead.")
+                            .font(.footnote)
+                            .multilineTextAlignment(.center)
+                    }
+                    Button("Scan again from another height") { beginPass(flipped: false) }
                         .buttonStyle(.bordered)
                     Button("Finish & build model") { session.finish() }
                         .buttonStyle(.borderedProminent)
@@ -113,6 +119,30 @@ struct CaptureView: View {
             .padding(10)
             .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 10))
         }
+    }
+
+    /// Apple raises this when it does not expect to stitch a flipped pass to the first
+    /// one (a plain or symmetric object), and its own sample steers away from the flip then.
+    private var isFlippable: Bool {
+        !session.feedback.contains(.objectNotFlippable)
+    }
+
+    /// Both calls are documented as valid only mid-capture, and neither can report a
+    /// misuse except by failing. The first tap moves the session on (a flip all the way
+    /// back to `.ready`) before SwiftUI has redrawn the button, so a second tap on the
+    /// same frame would land in a state the call does not accept.
+    private func beginPass(flipped: Bool) {
+        guard isCapturing, session.userCompletedScanPass else {
+            captureLog.notice("ignored new pass (flipped=\(flipped, privacy: .public)), state=\(session.state.label, privacy: .public)")
+            return
+        }
+        captureLog.notice("begin new pass, flipped=\(flipped, privacy: .public)")
+        if flipped {
+            session.beginNewScanPassAfterFlip()
+        } else {
+            session.beginNewScanPass()
+        }
+        captureLog.notice("new pass begun, state=\(session.state.label, privacy: .public)")
     }
 
     private var isCapturing: Bool {
