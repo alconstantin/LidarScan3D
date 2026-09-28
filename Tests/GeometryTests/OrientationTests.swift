@@ -29,6 +29,33 @@ final class OrientationTests: XCTestCase {
         XCTAssertEqual(turned.sizeMM.z, 8, accuracy: 0.001)
     }
 
+    /// The device test: a 40 mm cube scanned at 34° read as 57.9 × 56.8 mm.
+    func testSquaringUpMeasuresATurnedCubeByItsFaces() {
+        let turned = Solids.cube(side: 40).rotated(by: simd_quatf(angle: 34 * .pi / 180, axis: SIMD3(0, 0, 1)))
+        XCTAssertGreaterThan(turned.sizeMM.x, 55)
+        let squared = turned.squaredUp()
+        XCTAssertEqual(squared.sizeMM.x, 40, accuracy: 0.01)
+        XCTAssertEqual(squared.sizeMM.y, 40, accuracy: 0.01)
+        XCTAssertEqual(squared.sizeMM.z, 40, accuracy: 0.01)
+    }
+
+    /// The smallest turn back is taken, so a long box keeps its long side on X.
+    func testSquaringUpTakesTheSmallestTurn() {
+        let b = Solids.box(SIMD3(-30, -10, 0), SIMD3(30, 10, 15))
+        let box = MeshData.seated(vertices: b.vertices, indices: b.indices)
+        let squared = box.rotated(by: simd_quatf(angle: -25 * .pi / 180, axis: SIMD3(0, 0, 1))).squaredUp()
+        XCTAssertEqual(squared.sizeMM.x, 60, accuracy: 0.01)
+        XCTAssertEqual(squared.sizeMM.y, 20, accuracy: 0.01)
+    }
+
+    /// A round footprint has no heading to square to; noise must not spin it.
+    func testSquaringUpLeavesRoundAndAlignedModelsAlone() {
+        let sphere = Solids.sphere(radius: 30)
+        XCTAssertEqual(sphere.squaredUp().vertices, sphere.vertices)
+        let legs = Solids.twoLegged()
+        XCTAssertEqual(legs.squaredUp().vertices, legs.vertices)
+    }
+
     func testIdentityRotationIsANoOp() {
         let original = Solids.cube(side: 20)
         XCTAssertEqual(original.rotated(by: MeshData.noRotation).vertices, original.vertices)

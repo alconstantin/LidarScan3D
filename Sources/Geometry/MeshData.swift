@@ -132,6 +132,78 @@ struct MeshData: Sendable {
         return MeshData.seated(vertices: vertices.map { rotation.act($0) }, indices: indices)
     }
 
+    /// The same mesh turned about Z so its footprint lines up with X and Y.
+    ///
+    /// Object Capture leaves the model at whatever heading the capture happened to
+    /// start from, so a box scanned at an angle reads as its diagonal: a 40 mm cube
+    /// turned 34° measured 57.9 × 56.8 mm. Every size the app shows, and the
+    /// calibration built on them, is only meaningful once the model is squared up.
+    func squaredUp() -> MeshData {
+        let angle = MeshData.squaringAngle(vertices.map { SIMD2($0.x, $0.y) })
+        guard angle != 0 else { return self }
+        return rotated(by: simd_quatf(angle: angle, axis: SIMD3(0, 0, 1)))
+    }
+
+    /// The turn about Z, within ±45°, that gives `points` the smallest bounding
+    /// rectangle, or 0 when no turn helps.
+    ///
+    /// The smallest rectangle around a convex polygon has one side along one of its
+    /// edges, so only the hull's edge directions need trying. A round footprint has no
+    /// heading worth squaring to, so a turn that saves less than 1 % of the area is
+    /// not made: a vase is left as it was rather than spun by noise.
+    static func squaringAngle(_ points: [SIMD2<Float>]) -> Float {
+        let hull = convexHull(points)
+        guard hull.count >= 3 else { return 0 }
+
+        func footprint(turnedBy angle: Float) -> Float {
+            let c = cos(angle), s = sin(angle)
+            var lo = SIMD2<Float>(repeating: .infinity), hi = -lo
+            for p in hull {
+                let q = SIMD2(c * p.x - s * p.y, s * p.x + c * p.y)
+                lo = simd_min(lo, q)
+                hi = simd_max(hi, q)
+            }
+            let extent = hi - lo
+            return extent.x * extent.y
+        }
+
+        let unturned = footprint(turnedBy: 0)
+        var best = (area: unturned, angle: Float(0))
+        for i in hull.indices {
+            let edge = hull[(i + 1) % hull.count] - hull[i]
+            let angle = -atan2(edge.y, edge.x) // lays this edge along X
+            let area = footprint(turnedBy: angle)
+            if area < best.area { best = (area, angle) }
+        }
+        guard best.area < unturned * 0.99 else { return 0 }
+
+        // A rectangle looks the same after every quarter turn; make the smallest one.
+        let quarter = Float.pi / 2
+        var angle = best.angle.truncatingRemainder(dividingBy: quarter)
+        if angle > quarter / 2 { angle -= quarter } else if angle < -quarter / 2 { angle += quarter }
+        return angle
+    }
+
+    /// Andrew's monotone chain, counter-clockwise, collinear points dropped.
+    static func convexHull(_ points: [SIMD2<Float>]) -> [SIMD2<Float>] {
+        let sorted = points.sorted { $0.x != $1.x ? $0.x < $1.x : $0.y < $1.y }
+        guard sorted.count >= 3 else { return sorted }
+        func turn(_ o: SIMD2<Float>, _ a: SIMD2<Float>, _ b: SIMD2<Float>) -> Float {
+            (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x)
+        }
+        var lower: [SIMD2<Float>] = []
+        for p in sorted {
+            while lower.count >= 2, turn(lower[lower.count - 2], lower[lower.count - 1], p) <= 0 { lower.removeLast() }
+            lower.append(p)
+        }
+        var upper: [SIMD2<Float>] = []
+        for p in sorted.reversed() {
+            while upper.count >= 2, turn(upper[upper.count - 2], upper[upper.count - 1], p) <= 0 { upper.removeLast() }
+            upper.append(p)
+        }
+        return Array(lower.dropLast() + upper.dropLast())
+    }
+
     /// A quarter turn about `axis`, for choosing which side of the scan faces the bed.
     /// Quarter turns about X and Y reach all 24 axis-aligned orientations between them.
     static func quarterTurn(about axis: SIMD3<Float>, clockwise: Bool) -> simd_quatf {
