@@ -5,6 +5,8 @@ import RealityKit
 struct CaptureView: View {
     @Environment(AppModel.self) private var model
     let session: ObjectCaptureSession
+    /// Set while the session is paused for the user to turn the object over.
+    @State private var isFlipping = false
 
     var body: some View {
         ZStack {
@@ -65,18 +67,31 @@ struct CaptureView: View {
             .controlSize(.large)
 
         case .capturing:
-            if session.userCompletedScanPass {
+            if isFlipping {
+                VStack(spacing: 10) {
+                    Text("Turn the object over").font(.headline)
+                    Text("Lay it on a side you have not photographed yet, in the same spot, then tap Continue and fit the box around it again.")
+                        .font(.footnote)
+                        .multilineTextAlignment(.center)
+                    Button("Continue") { finishFlip() }
+                        .buttonStyle(.borderedProminent)
+                    Button("Back") { cancelFlip() }
+                        .buttonStyle(.bordered)
+                }
+                .padding()
+                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16))
+            } else if session.userCompletedScanPass {
                 VStack(spacing: 10) {
                     Text("Scan pass complete!").font(.headline)
                     if isFlippable {
-                        Button("Flip object & scan the bottom") { beginPass(flipped: true) }
+                        Button("Flip object & scan the bottom") { startFlip() }
                             .buttonStyle(.bordered)
                     } else {
                         Text("This object is too plain or symmetric to match up after a flip. Scan it again from another height instead.")
                             .font(.footnote)
                             .multilineTextAlignment(.center)
                     }
-                    Button("Scan again from another height") { beginPass(flipped: false) }
+                    Button("Scan again from another height") { beginPass() }
                         .buttonStyle(.bordered)
                     Button("Finish & build model") { session.finish() }
                         .buttonStyle(.borderedProminent)
@@ -127,22 +142,45 @@ struct CaptureView: View {
         !session.feedback.contains(.objectNotFlippable)
     }
 
-    /// Both calls are documented as valid only mid-capture, and neither can report a
-    /// misuse except by failing. The first tap moves the session on (a flip all the way
-    /// back to `.ready`) before SwiftUI has redrawn the button, so a second tap on the
-    /// same frame would land in a state the call does not accept.
-    private func beginPass(flipped: Bool) {
+    /// A new pass from the same side is valid straight from `.capturing`. The first tap
+    /// resets the pass before SwiftUI has redrawn the button, so a second tap on the same
+    /// frame is dropped rather than calling into a session that has moved on.
+    private func beginPass() {
         guard isCapturing, session.userCompletedScanPass else {
-            captureLog.notice("ignored new pass (flipped=\(flipped, privacy: .public)), state=\(session.state.label, privacy: .public)")
+            captureLog.notice("ignored new pass, state=\(session.state.label, privacy: .public)")
             return
         }
-        captureLog.notice("begin new pass, flipped=\(flipped, privacy: .public)")
-        if flipped {
-            session.beginNewScanPassAfterFlip()
-        } else {
-            session.beginNewScanPass()
+        captureLog.notice("begin new pass")
+        session.beginNewScanPass()
+    }
+
+    /// A flipped pass is only valid from a session paused mid-capture: called while
+    /// capturing, `beginNewScanPassAfterFlip()` traps with "Must be .paused from
+    /// .capturing". Pausing also stops automatic shots of the object being turned over.
+    private func startFlip() {
+        guard isCapturing, session.userCompletedScanPass, !isFlipping else { return }
+        captureLog.notice("pausing for flip")
+        session.pause()
+        isFlipping = true
+    }
+
+    private func finishFlip() {
+        guard isFlipping, isCapturing, session.isPaused else {
+            captureLog.notice("ignored flip, state=\(session.state.label, privacy: .public) paused=\(session.isPaused, privacy: .public)")
+            isFlipping = false
+            return
         }
-        captureLog.notice("new pass begun, state=\(session.state.label, privacy: .public)")
+        isFlipping = false
+        session.beginNewScanPassAfterFlip()
+        // The flip sends the session back to `.ready` for a new box. Apple's sample
+        // resumes once its flip sheet closes; without it detection would stay paused.
+        if session.isPaused { session.resume() }
+        captureLog.notice("flip pass begun, state=\(session.state.label, privacy: .public)")
+    }
+
+    private func cancelFlip() {
+        isFlipping = false
+        if session.isPaused { session.resume() }
     }
 
     private var isCapturing: Bool {
