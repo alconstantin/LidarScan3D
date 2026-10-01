@@ -5,6 +5,8 @@ struct HomeView: View {
     @State private var scans: [ScanFolder] = []
     @State private var path: [ScanFolder] = []
     @State private var sampleError: String?
+    @State private var scanPendingDeletion: ScanFolder?
+    @State private var deletionError: String?
 
     var body: some View {
         NavigationStack(path: $path) {
@@ -42,10 +44,16 @@ struct HomeView: View {
                     }
                     ForEach(scans) { scan in
                         NavigationLink(scan.name, value: scan)
+                            .swipeActions {
+                                Button(role: .destructive) {
+                                    scanPendingDeletion = scan
+                                } label: {
+                                    Label("Delete", systemImage: "trash")
+                                }
+                            }
                     }
                     .onDelete { offsets in
-                        offsets.forEach { scans[$0].delete() }
-                        scans.remove(atOffsets: offsets)
+                        scanPendingDeletion = offsets.first.map { scans[$0] }
                     }
                     if !scans.contains(where: \.isSample) {
                         Button { openSample() } label: {
@@ -55,6 +63,9 @@ struct HomeView: View {
                     if let sampleError {
                         Text(sampleError).font(.footnote).foregroundStyle(.red)
                     }
+                    if let deletionError {
+                        Text(deletionError).font(.footnote).foregroundStyle(.red)
+                    }
                 } header: {
                     Text("Your scans")
                 } footer: {
@@ -62,6 +73,7 @@ struct HomeView: View {
                 }
             }
             .navigationTitle("LiDAR Scan 3D")
+            .toolbar { EditButton() }
             .navigationDestination(for: ScanFolder.self) { ResultView(scan: $0) }
             // Listing the folder stats every scan on disk, which does not belong
             // on the main thread once a few dozen have piled up. Scans that never
@@ -72,7 +84,29 @@ struct HomeView: View {
                     return ScanFolder.all()
                 }.value
             }
+            .confirmationDialog("Delete this scan?", isPresented: Binding(
+                get: { scanPendingDeletion != nil },
+                set: { if !$0 { scanPendingDeletion = nil } }
+            ), titleVisibility: .visible) {
+                Button("Delete scan", role: .destructive) { deletePendingScan() }
+                Button("Cancel", role: .cancel) { scanPendingDeletion = nil }
+            } message: {
+                Text("This permanently deletes its photos, checkpoints, model, exports and capture notes from this iPhone.")
+            }
         }
+    }
+
+    private func deletePendingScan() {
+        guard let scan = scanPendingDeletion else { return }
+        do {
+            try scan.delete()
+            scans.removeAll { $0 == scan }
+            path.removeAll { $0 == scan }
+            deletionError = nil
+        } catch {
+            deletionError = "Could not delete \(scan.name): \(error.localizedDescription)"
+        }
+        scanPendingDeletion = nil
     }
 
     private func openSample() {

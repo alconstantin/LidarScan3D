@@ -258,7 +258,7 @@ final class AppModel {
     }
 
     private func discardCurrentScan() {
-        currentScan?.delete()
+        if let currentScan { try? currentScan.delete() }
         currentScan = nil
     }
 }

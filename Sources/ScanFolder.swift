@@ -160,12 +160,16 @@ struct ScanFolder: Identifiable, Hashable, Sendable {
         for scan in urls.map(ScanFolder.init(url:)) where !scan.hasModel {
             guard let created = try? scan.url.resourceValues(forKeys: [.creationDateKey]).creationDate,
                   created < cutoff else { continue }
-            scan.delete()
+            try? scan.delete()
         }
     }
 
-    func delete() {
-        try? FileManager.default.removeItem(at: url)
+    /// Permanently removes the scan's enclosing folder. That folder owns every piece
+    /// of app-managed scan data: source photos, reconstruction checkpoints, model,
+    /// exports and the capture-quality record. A successful remove leaves no scan
+    /// artefacts in Documents/Scans.
+    func delete() throws {
+        try FileManager.default.removeItem(at: url)
     }
 
     func deleteCheckpoints() {

@@ -7,6 +7,7 @@ import simd
 
 /// 3D preview, real-world dimensions, orientation, scaling, flat base and STL/OBJ/USDZ export.
 struct ResultView: View {
+    @Environment(AppModel.self) private var model
     let scan: ScanFolder
 
     @State private var texturedScene: SCNScene?
@@ -32,6 +33,7 @@ struct ResultView: View {
     /// Bumped by every rebuild; a task whose stamp is stale drops its result.
     @State private var rebuildGeneration = 0
     @State private var isExporting = false
+    @State private var showingDeleteConfirmation = false
     @State private var shareItem: ShareItem?
     @State private var showingCalibration = false
     @State private var calibrationText = ""
@@ -326,6 +328,15 @@ struct ResultView: View {
         }
         .navigationTitle(scan.name)
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button(role: .destructive) {
+                    showingDeleteConfirmation = true
+                } label: {
+                    Label("Delete scan", systemImage: "trash")
+                }
+            }
+        }
         .task { await load() }
         .sheet(item: $shareItem) { ActivityView(url: $0.url) }
         .overlay {
@@ -344,6 +355,12 @@ struct ResultView: View {
             if let activeMesh {
                 Text("The scan's \(calibrationSide.noun) is currently \(mm(calibrationSide.length(of: activeMesh))) mm at 100 %.")
             }
+        }
+        .confirmationDialog("Delete this scan?", isPresented: $showingDeleteConfirmation, titleVisibility: .visible) {
+            Button("Delete scan", role: .destructive) { deleteScan() }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This permanently deletes its photos, checkpoints, model, exports and capture notes from this iPhone.")
         }
     }
 
@@ -566,6 +583,15 @@ struct ResultView: View {
                 errorMessage = "Export failed: \(error.localizedDescription)"
             }
             isExporting = false
+        }
+    }
+
+    private func deleteScan() {
+        do {
+            try scan.delete()
+            model.goHome()
+        } catch {
+            errorMessage = "Could not delete the scan: \(error.localizedDescription)"
         }
     }
 
