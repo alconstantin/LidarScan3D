@@ -35,6 +35,9 @@ true millimetre scale, a flat base, and STL export.
 - **Scan cleanup.** Detects and proposes removal of a broad table/turntable surface
   at the bottom of a scan, and can remove tiny isolated background fragments. Both
   operations are opt-in and show their triangle counts in the preview.
+- **Surface finish.** Optional light, medium or strong smoothing softens gentle
+  reconstruction noise before export. It preserves sharp creases and open edges,
+  never changes mesh topology, and can be switched back to *Off* at any time.
 - **Ready-to-print check.** Before you export, the app says whether the model is
   watertight (and if not, how many holes and bad edges it has), and whether it fits
   your printer's build volume, with one tap to scale it down if it does not. Bambu
@@ -136,7 +139,9 @@ squared up with X and Y. Start with *Capture quality*: it records light, motion,
 distance and framing warnings from the actual scan. If the app proposes a *support
 surface*, inspect the preview and accept it only when it is clearly the table or
 turntable, not the object's own base. *Remove isolated fragments* clears only tiny,
-disconnected background pieces. Turn the model until the side you want to print on
+disconnected background pieces. Use *Surface finish* at *Light* first if the scan has
+fine surface noise; it preserves sharp creases and open rims, while *Off* immediately
+restores the unmodified surface. Turn the model until the side you want to print on
 faces the grey bed. Enable *Flat base* and move the cut-plane slider until the ragged
 underside is gone; release it to see the exact capped result. Set the scale, or tap
 *Match real size*, say which side you measured, and enter its length.
@@ -276,8 +281,8 @@ Still to do under the publishing Apple Developer account:
 | `Sources/AppModel.swift` | Capture session, reconstruction, scan lifecycle |
 | `Sources/CaptureView.swift` | Guided capture UI and live feedback |
 | `Sources/ReconstructionView.swift` | Reconstruction progress |
-| `Sources/ResultView.swift` | Preview, orientation, scale, flat base, export |
-| `Sources/Geometry/MeshData.swift` | Mesh loading, squaring up, plane cut, STL/OBJ writers |
+| `Sources/ResultView.swift` | Preview, orientation, cleanup, surface finish, scaling, flat base, export |
+| `Sources/Geometry/MeshData.swift` | Mesh loading, squaring up, surface smoothing, plane cut, STL/OBJ writers |
 | `Sources/Geometry/CapTriangulation.swift` | Triangulates the flat base, holes included |
 | `Sources/Geometry/PrintReport.swift` | Watertightness check shown before export |
 | `Sources/Geometry/BuildVolume.swift` | Printer presets and the fit-to-plate calculation |
@@ -339,8 +344,9 @@ Console.app with the phone connected.
   the lean by eye against the bed plane is honest; a fit that silently worsens a print
   is not. A robust method (RANSAC, or the convex hull's largest face) is the way back
   in, chosen against real scan data rather than synthetic noise.
-- **No mesh repair, decimation or hollowing.** Meshes are exported at the resolution
-  Object Capture produces.
+- **No mesh repair, decimation or hollowing.** Surface finish only smooths gentle
+  noise; it does not close holes, remove non-manifold geometry or reduce triangle
+  count. Meshes are otherwise exported at the resolution Object Capture produces.
 - **iPhone only, portrait only.**
 - **The app icon is a placeholder**, generated rather than designed.
 

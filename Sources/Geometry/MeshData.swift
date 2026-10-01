@@ -619,3 +619,124 @@ struct SmallComponentCleanup: Sendable {
     let removedTriangles: Int
     let removedComponents: Int
 }
+
+/// A deliberately small set of finishing strengths. They smooth reconstruction noise,
+/// not the object's shape; sharp creases and open edges are left alone.
+enum MeshSmoothingLevel: String, CaseIterable, Identifiable, Sendable {
+    case off, light, medium, strong
+
+    var id: Self { self }
+
+    var label: String {
+        switch self {
+        case .off: "Off"
+        case .light: "Light"
+        case .medium: "Medium"
+        case .strong: "Strong"
+        }
+    }
+
+    fileprivate var iterations: Int {
+        switch self {
+        case .off: 0
+        case .light: 2
+        case .medium: 4
+        case .strong: 7
+        }
+    }
+}
+
+private struct SmoothingEdge: Hashable {
+    let low: UInt32
+    let high: UInt32
+
+    init(_ a: UInt32, _ b: UInt32) {
+        low = min(a, b)
+        high = max(a, b)
+    }
+}
+
+private struct SmoothingEdgeFaces {
+    var first: Int
+    var second: Int?
+}
+
+extension MeshData {
+    /// Smooths gentle photogrammetry noise with a Taubin pass, without changing the
+    /// mesh topology. Neighbours across a sharp crease are not joined, and vertices
+    /// touching an open or non-manifold edge stay fixed so smoothing cannot enlarge a
+    /// hole or round its rim.
+    func smoothed(level: MeshSmoothingLevel) -> MeshData {
+        guard level.iterations > 0, triangleCount > 0 else { return self }
+
+        var edgeFaces: [SmoothingEdge: SmoothingEdgeFaces] = [:]
+        edgeFaces.reserveCapacity(indices.count)
+
+        for face in 0..<triangleCount {
+            let start = face * 3
+            let triangle = [indices[start], indices[start + 1], indices[start + 2]]
+            guard triangle.allSatisfy({ Int($0) < vertices.count }) else { return self }
+            for (a, b) in [(triangle[0], triangle[1]), (triangle[1], triangle[2]), (triangle[2], triangle[0])] {
+                let edge = SmoothingEdge(a, b)
+                if var faces = edgeFaces[edge] {
+                    if faces.second == nil { faces.second = face }
+                    else { faces.second = -1 } // Three or more faces: do not smooth through it.
+                    edgeFaces[edge] = faces
+                } else {
+                    edgeFaces[edge] = SmoothingEdgeFaces(first: face, second: nil)
+                }
+            }
+        }
+
+        var faceNormals = [SIMD3<Float>](repeating: .zero, count: triangleCount)
+        for face in 0..<triangleCount {
+            let start = face * 3
+            let a = vertices[Int(indices[start])]
+            let b = vertices[Int(indices[start + 1])]
+            let c = vertices[Int(indices[start + 2])]
+            let cross = simd_cross(b - a, c - a)
+            let length = simd_length(cross)
+            if length > 1e-6 { faceNormals[face] = cross / length }
+        }
+
+        var neighbours = Array(repeating: Set<Int>(), count: vertices.count)
+        var fixed = Array(repeating: false, count: vertices.count)
+        // A 40-degree crease is a useful boundary between scan noise and a designed
+        // edge. The threshold is conservative because this tool must not soften detail.
+        let sharpnessCosine = cos(Float.pi * 40 / 180)
+        for (edge, faces) in edgeFaces {
+            let a = Int(edge.low), b = Int(edge.high)
+            guard let other = faces.second, other >= 0 else {
+                fixed[a] = true
+                fixed[b] = true
+                continue
+            }
+            guard simd_dot(faceNormals[faces.first], faceNormals[other]) >= sharpnessCosine else {
+                // A crease belongs to the object's shape, not the scan noise. Keeping
+                // its endpoints fixed also prevents in-face diagonals from rounding it.
+                fixed[a] = true
+                fixed[b] = true
+                continue
+            }
+            neighbours[a].insert(b)
+            neighbours[b].insert(a)
+        }
+
+        func pass(_ input: [SIMD3<Float>], factor: Float) -> [SIMD3<Float>] {
+            var output = input
+            for i in input.indices where !fixed[i] && !neighbours[i].isEmpty {
+                let average = neighbours[i].reduce(SIMD3<Float>.zero) { $0 + input[$1] } / Float(neighbours[i].count)
+                output[i] += (average - input[i]) * factor
+            }
+            return output
+        }
+
+        var result = vertices
+        for _ in 0..<level.iterations {
+            // The negative pass counters the volume loss of ordinary Laplacian smoothing.
+            result = pass(result, factor: 0.28)
+            result = pass(result, factor: -0.29)
+        }
+        return MeshData.seated(vertices: result, indices: indices)
+    }
+}

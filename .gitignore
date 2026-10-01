@@ -1,6 +1,7 @@
 *.xcodeproj/
 build/
 .build/
+.swiftpm/
 DerivedData/
 Payload/
 *.ipa

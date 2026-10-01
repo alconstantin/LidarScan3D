@@ -25,6 +25,7 @@ struct ResultView: View {
     @State private var oriented: MeshData?      // mesh after the current orientation
     @State private var supportClean: MeshData?  // oriented after a captured table is removed
     @State private var fragmentsClean: MeshData? // support-cleaned mesh with small detached noise removed
+    @State private var smoothed: MeshData?      // cleaned mesh after the selected surface finish
     @State private var flat: MeshData?          // prepared mesh after the base cut
     @State private var orientation = MeshData.noRotation
     @State private var isReoriented = false
@@ -36,6 +37,7 @@ struct ResultView: View {
     @State private var removeSmallComponents = false
     @State private var removedFragmentTriangles = 0
     @State private var removedFragments = 0
+    @State private var smoothingLevel: MeshSmoothingLevel = .off
     @State private var flatBase = false
     @State private var trimFraction: Double = 0
     @State private var isPreparing = false
@@ -53,6 +55,7 @@ struct ResultView: View {
     @State private var loadedReport: PrintReport?
     @State private var supportReport: PrintReport?
     @State private var fragmentsReport: PrintReport?
+    @State private var smoothingReport: PrintReport?
     @State private var cutReport: PrintReport?
     @AppStorage("printer") private var printer: Printer = .bambuP1X1
 
@@ -73,6 +76,7 @@ struct ResultView: View {
     /// Until the cut lands, the mesh it is being cut from stands in for it.
     private var activeMesh: MeshData? {
         if flatBase, let flat { return flat }
+        if smoothingLevel != .off, let smoothed { return smoothed }
         if removeSmallComponents, let fragmentsClean { return fragmentsClean }
         if removeSupportSurface, let supportClean { return supportClean }
         return oriented ?? mesh
@@ -81,6 +85,7 @@ struct ResultView: View {
     /// The geometry that the cut plane is measured from. Support and fragment removal
     /// can change the model's height, so the control must not keep using the original.
     private var preCutMesh: MeshData? {
+        if smoothingLevel != .off, let smoothed { return smoothed }
         if removeSmallComponents, let fragmentsClean { return fragmentsClean }
         if removeSupportSurface, let supportClean { return supportClean }
         return oriented ?? mesh
@@ -89,6 +94,7 @@ struct ResultView: View {
     /// Describes `activeMesh`, falling back the same way it does.
     private var activeReport: PrintReport? {
         if flatBase, flat != nil { return cutReport }
+        if smoothingLevel != .off, smoothed != nil { return smoothingReport }
         if removeSmallComponents, fragmentsClean != nil { return fragmentsReport }
         if removeSupportSurface, supportClean != nil { return supportReport }
         return loadedReport
@@ -96,7 +102,7 @@ struct ResultView: View {
 
     /// The textured USDZ cannot show a turn or a cut, so anything that changes the
     /// geometry switches the preview to the mesh actually being exported.
-    private var showsGeneratedPreview: Bool { flatBase || removeSupportSurface || removeSmallComponents || isReoriented }
+    private var showsGeneratedPreview: Bool { flatBase || smoothingLevel != .off || removeSupportSurface || removeSmallComponents || isReoriented }
 
     /// Falls back rather than blanking: an empty preview reads as a hang.
     private var previewScene: SCNScene? {
@@ -263,6 +269,23 @@ struct ResultView: View {
                         }
                     }
 
+                    Picker("Surface finish", selection: Binding(
+                        get: { smoothingLevel },
+                        set: { level in
+                            smoothingLevel = level
+                            rebuild()
+                        }
+                    )) {
+                        ForEach(MeshSmoothingLevel.allCases) { level in
+                            Text(level.label).tag(level)
+                        }
+                    }
+
+                    if smoothingLevel != .off {
+                        Label("\(smoothingLevel.label) smoothing — preview before exporting", systemImage: "sparkles")
+                            .foregroundStyle(.secondary)
+                    }
+
                     // The rebuild rides the binding rather than onChange: the handler runs
                     // from the tap itself, so it cannot be lost if this row is rebuilt.
                     Toggle("Flat base", isOn: Binding(
@@ -300,6 +323,8 @@ struct ResultView: View {
                         Text("Removes the largest horizontal patch at the bottom, typically a table or turntable. Check the preview: a clean object can also have a flat base. Use Flat base afterwards to cap the opening for printing.")
                     } else if removeSmallComponents {
                         Text("Removes only disconnected pieces smaller than 0.5% of the main surface (and under 25 mm²). Check the preview when scanning an assembly with intentionally separate small parts.")
+                    } else if smoothingLevel != .off {
+                        Text("Softens gentle reconstruction noise while preserving sharp creases and open edges. It is reversible: choose Off to restore the unmodified scan.")
                     } else if flatBase {
                         Text("Slices the bottom off at the chosen height and caps it with a flat face, so the model sits solidly on the bed. Raise the trim until the ragged underside of the scan is gone. Measurements above already account for it.")
                     } else {
@@ -456,7 +481,7 @@ struct ResultView: View {
     }
 
     /// Re-derives every generated mesh and the preview from the untouched original.
-    /// Turning, support removal and trimming all come through here, so neither
+    /// Turning, cleanup, smoothing and trimming all come through here, so neither
     /// accumulates rounding error across repeated taps — only the quaternion does.
     private func rebuild() {
         guard let mesh else { return }
@@ -466,26 +491,29 @@ struct ResultView: View {
         let rotation = orientation
         let removeSupport = removeSupportSurface
         let removeFragments = removeSmallComponents
+        let smoothing = smoothingLevel
         let fraction = flatBase ? Float(trimFraction) : 0
 
         Task {
             // The scene is built here too, not after the hop back. makeGeometry walks
             // every triangle to accumulate normals and then packs two vertex-sized
             // arrays, which on a scan-scale mesh is the most expensive step of the lot.
-            let result = await Task.detached { () -> (MeshData, MeshData?, MeshData?, MeshData?, Int, Int, Int, SCNScene, PrintReport?, PrintReport?, PrintReport?) in
+            let result = await Task.detached { () -> (MeshData, MeshData?, MeshData?, MeshData?, MeshData?, Int, Int, Int, SCNScene, PrintReport?, PrintReport?, PrintReport?, PrintReport?) in
                 let oriented = mesh.rotated(by: rotation)
                 let removal = removeSupport ? oriented.removingSupportSurface() : nil
                 let supportPrepared = removal?.mesh ?? oriented
                 let fragmentRemoval = removeFragments ? supportPrepared.removingSmallComponents() : nil
-                let prepared = fragmentRemoval?.mesh ?? supportPrepared
+                let cleaned = fragmentRemoval?.mesh ?? supportPrepared
+                let smoothingResult = smoothing == .off ? nil : cleaned.smoothed(level: smoothing)
+                let prepared = smoothingResult ?? cleaned
                 let cut = fraction > 0 ? prepared.flatBase(trimMM: prepared.sizeMM.z * fraction) : nil
                 let exported = cut ?? prepared
-                return (oriented, removal?.mesh, fragmentRemoval?.mesh, cut,
+                return (oriented, removal?.mesh, fragmentRemoval?.mesh, smoothingResult, cut,
                         removal?.removedTriangles ?? 0,
                         fragmentRemoval?.removedTriangles ?? 0,
                         fragmentRemoval?.removedComponents ?? 0,
                         Self.makeScene(for: exported), removal?.mesh.printReport(),
-                        fragmentRemoval?.mesh.printReport(), cut?.printReport())
+                        fragmentRemoval?.mesh.printReport(), smoothingResult?.printReport(), cut?.printReport())
             }.value
 
             // Turns are cheap but a cut on a large scan is not, so two quick taps can
@@ -495,14 +523,16 @@ struct ResultView: View {
             oriented = result.0
             supportClean = result.1
             fragmentsClean = result.2
-            flat = result.3
-            removedSupportTriangles = result.4
-            removedFragmentTriangles = result.5
-            removedFragments = result.6
-            generatedScene = result.7
-            supportReport = result.8
-            fragmentsReport = result.9
-            cutReport = result.10
+            smoothed = result.3
+            flat = result.4
+            removedSupportTriangles = result.5
+            removedFragmentTriangles = result.6
+            removedFragments = result.7
+            generatedScene = result.8
+            supportReport = result.9
+            fragmentsReport = result.10
+            smoothingReport = result.11
+            cutReport = result.12
             isPreparing = false
         }
     }
@@ -562,6 +592,7 @@ struct ResultView: View {
         var suffix = ""
         if removeSupportSurface, supportClean != nil { suffix += " support removed" }
         if removeSmallComponents, fragmentsClean != nil { suffix += " fragments removed" }
+        if smoothingLevel != .off, smoothed != nil { suffix += " smooth \(smoothingLevel.rawValue)" }
         if flatBase { suffix += String(format: " flat %.1fmm", Double(printedTrimMM)) }
         let baseName = "\(scan.name) \(Int(scalePercent.rounded()))pct\(suffix)"
         let exportsURL = scan.exportsURL
