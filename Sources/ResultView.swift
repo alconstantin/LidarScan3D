@@ -13,11 +13,14 @@ struct ResultView: View {
     @State private var generatedScene: SCNScene?
     @State private var mesh: MeshData?          // exactly as loaded, never re-derived
     @State private var oriented: MeshData?      // mesh after the current orientation
+    @State private var supportClean: MeshData?  // oriented after a captured table is removed
     @State private var flat: MeshData?          // oriented after the base cut
     @State private var orientation = MeshData.noRotation
     @State private var isReoriented = false
     @State private var errorMessage: String?
     @State private var scalePercent: Double = 100
+    @State private var removeSupportSurface = false
+    @State private var removedSupportTriangles = 0
     @State private var flatBase = false
     @State private var trimFraction: Double = 0
     @State private var isPreparing = false
@@ -31,6 +34,7 @@ struct ResultView: View {
     /// Turning never changes whether a mesh is closed, so only loading and cutting
     /// produce a report: one for the mesh as loaded, one for the latest cut.
     @State private var loadedReport: PrintReport?
+    @State private var supportReport: PrintReport?
     @State private var cutReport: PrintReport?
     @AppStorage("printer") private var printer: Printer = .bambuP1X1
 
@@ -51,18 +55,20 @@ struct ResultView: View {
     /// Until the cut lands, the mesh it is being cut from stands in for it.
     private var activeMesh: MeshData? {
         if flatBase, let flat { return flat }
+        if removeSupportSurface, let supportClean { return supportClean }
         return oriented ?? mesh
     }
 
     /// Describes `activeMesh`, falling back the same way it does.
     private var activeReport: PrintReport? {
         if flatBase, flat != nil { return cutReport }
+        if removeSupportSurface, supportClean != nil { return supportReport }
         return loadedReport
     }
 
     /// The textured USDZ cannot show a turn or a cut, so anything that changes the
     /// geometry switches the preview to the mesh actually being exported.
-    private var showsGeneratedPreview: Bool { flatBase || isReoriented }
+    private var showsGeneratedPreview: Bool { flatBase || removeSupportSurface || isReoriented }
 
     /// Falls back rather than blanking: an empty preview reads as a hang.
     private var previewScene: SCNScene? {
@@ -159,6 +165,24 @@ struct ResultView: View {
                 }
 
                 Section {
+                    Toggle("Remove support surface", isOn: Binding(
+                        get: { removeSupportSurface },
+                        set: { isOn in
+                            removeSupportSurface = isOn
+                            rebuild()
+                        }
+                    ))
+
+                    if removeSupportSurface {
+                        if removedSupportTriangles > 0 {
+                            Label("Removed \(removedSupportTriangles.formatted()) support triangles", systemImage: "tablecells")
+                                .foregroundStyle(.secondary)
+                        } else if !isPreparing {
+                            Label("No broad support surface found", systemImage: "info.circle")
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+
                     // The rebuild rides the binding rather than onChange: the handler runs
                     // from the tap itself, so it cannot be lost if this row is rebuilt.
                     Toggle("Flat base", isOn: Binding(
@@ -189,9 +213,13 @@ struct ResultView: View {
                 } header: {
                     Text("Print preparation")
                 } footer: {
-                    Text(flatBase
-                         ? "Slices the bottom off at the chosen height and caps it with a flat face, so the model sits solidly on the bed. Raise the trim until the ragged underside of the scan is gone. Measurements above already account for it."
-                         : "Scans usually reconstruct a rough, uneven underside. A flat base cuts it off so the print adheres to the bed and stands straight.")
+                    if removeSupportSurface {
+                        Text("Removes the largest horizontal patch at the bottom, typically a table or turntable. Check the preview: a clean object can also have a flat base. Use Flat base afterwards to cap the opening for printing.")
+                    } else if flatBase {
+                        Text("Slices the bottom off at the chosen height and caps it with a flat face, so the model sits solidly on the bed. Raise the trim until the ragged underside of the scan is gone. Measurements above already account for it.")
+                    } else {
+                        Text("Scans usually reconstruct a rough, uneven underside. A flat base cuts it off so the print adheres to the bed and stands straight.")
+                    }
                 }
 
                 Section {
@@ -323,26 +351,30 @@ struct ResultView: View {
         }
     }
 
-    /// Re-derives the oriented mesh, the cut mesh and the preview from the untouched
-    /// original. Turning and trimming both come through here, so neither accumulates
-    /// rounding error across repeated taps — only the quaternion accumulates.
+    /// Re-derives every generated mesh and the preview from the untouched original.
+    /// Turning, support removal and trimming all come through here, so neither
+    /// accumulates rounding error across repeated taps — only the quaternion does.
     private func rebuild() {
         guard let mesh else { return }
         isPreparing = true
         rebuildGeneration += 1
         let generation = rebuildGeneration
         let rotation = orientation
+        let removeSupport = removeSupportSurface
         let fraction = flatBase ? Float(trimFraction) : 0
 
         Task {
             // The scene is built here too, not after the hop back. makeGeometry walks
             // every triangle to accumulate normals and then packs two vertex-sized
             // arrays, which on a scan-scale mesh is the most expensive step of the lot.
-            let result = await Task.detached { () -> (MeshData, MeshData?, SCNScene, PrintReport?) in
+            let result = await Task.detached { () -> (MeshData, MeshData?, MeshData?, Int, SCNScene, PrintReport?, PrintReport?) in
                 let oriented = mesh.rotated(by: rotation)
-                guard fraction > 0 else { return (oriented, nil, Self.makeScene(for: oriented), nil) }
-                let cut = oriented.flatBase(trimMM: oriented.sizeMM.z * fraction)
-                return (oriented, cut, Self.makeScene(for: cut), cut.printReport())
+                let removal = removeSupport ? oriented.removingSupportSurface() : nil
+                let prepared = removal?.mesh ?? oriented
+                let cut = fraction > 0 ? prepared.flatBase(trimMM: prepared.sizeMM.z * fraction) : nil
+                let exported = cut ?? prepared
+                return (oriented, removal?.mesh, cut, removal?.removedTriangles ?? 0,
+                        Self.makeScene(for: exported), removal?.mesh.printReport(), cut?.printReport())
             }.value
 
             // Turns are cheap but a cut on a large scan is not, so two quick taps can
@@ -350,9 +382,12 @@ struct ResultView: View {
             // screen and in the export stops matching the accumulated orientation.
             guard generation == rebuildGeneration else { return }
             oriented = result.0
-            flat = result.1
-            generatedScene = result.2
-            cutReport = result.3
+            supportClean = result.1
+            flat = result.2
+            removedSupportTriangles = result.3
+            generatedScene = result.4
+            supportReport = result.5
+            cutReport = result.6
             isPreparing = false
         }
     }
@@ -407,9 +442,11 @@ struct ResultView: View {
         isExporting = true
         errorMessage = nil
         let scale = Float(scalePercent / 100)
-        // The trim goes in the name: without it, two different cuts collide. The
-        // orientation cannot be named usefully, so uniqueURL catches what is left.
-        let suffix = flatBase ? String(format: " flat %.1fmm", Double(printedTrimMM)) : ""
+        // Geometry-changing preparation goes in the name. The orientation cannot be
+        // named usefully, so uniqueURL catches what is left.
+        var suffix = ""
+        if removeSupportSurface, supportClean != nil { suffix += " support removed" }
+        if flatBase { suffix += String(format: " flat %.1fmm", Double(printedTrimMM)) }
         let baseName = "\(scan.name) \(Int(scalePercent.rounded()))pct\(suffix)"
         let exportsURL = scan.exportsURL
         let title = scan.name

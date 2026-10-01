@@ -30,6 +30,18 @@ private struct PlanarKey: Hashable {
     }
 }
 
+/// An undirected mesh edge. Support-plane triangles are joined only through shared
+/// edges, never merely through a corner, so two nearby surfaces stay independent.
+private struct EdgeKey: Hashable {
+    let low: UInt32
+    let high: UInt32
+
+    init(_ a: UInt32, _ b: UInt32) {
+        low = min(a, b)
+        high = max(a, b)
+    }
+}
+
 /// Triangle mesh prepared for 3D printing: millimetres, Z-up, centred on X/Y and resting on Z = 0.
 struct MeshData: Sendable {
     var vertices: [SIMD3<Float>]
@@ -212,6 +224,131 @@ struct MeshData: Sendable {
 
     static let noRotation = simd_quatf(angle: 0, axis: SIMD3<Float>(0, 0, 1))
 
+    /// Removes the largest connected, nearly-horizontal patch close to the bottom of
+    /// the scan. Object Capture commonly includes the table or turntable as a broad
+    /// flat sheet; a cylinder's base is a separate patch, so it is not joined to that
+    /// sheet through this planar-only graph.
+    ///
+    /// This is deliberately opt-in. A clean object can itself have a broad flat base,
+    /// and only the person looking at the preview can safely distinguish that from a
+    /// captured support surface. The caller can follow this with `flatBase(trimMM:)`
+    /// to cap the opening left by the removed sheet.
+    func removingSupportSurface() -> SupportSurfaceRemoval? {
+        guard triangleCount >= 3, sizeMM.z > 0 else { return nil }
+
+        // Depth reconstruction is noisy at the contact patch. Keep the band tight
+        // enough not to catch a low shelf, but never below one millimetre.
+        let bottomBand = min(max(sizeMM.z * 0.03, 1), 8)
+        let minimumArea = max(sizeMM.x * sizeMM.y * 0.05, 25)
+        let nearlyHorizontal: Float = 0.94 // within about 20 degrees of horizontal
+
+        var parent = [Int](repeating: -1, count: triangleCount)
+        var area = [Float](repeating: 0, count: triangleCount)
+        var edgeOwner: [EdgeKey: Int] = [:]
+
+        func root(_ value: Int) -> Int {
+            var node = value
+            while parent[node] != node { node = parent[node] }
+            return node
+        }
+
+        func join(_ lhs: Int, _ rhs: Int) {
+            let a = root(lhs), b = root(rhs)
+            guard a != b else { return }
+            parent[b] = a
+        }
+
+        for t in 0..<triangleCount {
+            let i = t * 3
+            let a = vertices[Int(indices[i])]
+            let b = vertices[Int(indices[i + 1])]
+            let c = vertices[Int(indices[i + 2])]
+            let normal = simd_cross(b - a, c - a)
+            let doubleArea = simd_length(normal)
+            guard doubleArea > 1e-5 else { continue }
+
+            let centroidZ = (a.z + b.z + c.z) / 3
+            guard centroidZ <= bottomBand,
+                  abs(normal.z) / doubleArea >= nearlyHorizontal else { continue }
+
+            parent[t] = t
+            area[t] = doubleArea / 2
+            for edge in [EdgeKey(indices[i], indices[i + 1]),
+                         EdgeKey(indices[i + 1], indices[i + 2]),
+                         EdgeKey(indices[i + 2], indices[i])] {
+                if let neighbour = edgeOwner[edge] { join(t, neighbour) }
+                else { edgeOwner[edge] = t }
+            }
+        }
+
+        var componentArea: [Int: Float] = [:]
+        for t in 0..<triangleCount where parent[t] >= 0 {
+            componentArea[root(t), default: 0] += area[t]
+        }
+        guard let support = componentArea.max(by: { $0.value < $1.value }),
+              support.value >= minimumArea else { return nil }
+
+        // A clean box or cylinder has a flat bottom too. A captured table earns its
+        // name only when it extends visibly beyond the rest of the object in X or Y.
+        var supportLow = SIMD2<Float>(repeating: .infinity)
+        var supportHigh = -supportLow
+        var objectLow = SIMD2<Float>(repeating: .infinity)
+        var objectHigh = -objectLow
+        for t in 0..<triangleCount {
+            let targetIsSupport = parent[t] >= 0 && root(t) == support.key
+            let i = t * 3
+            for index in indices[i..<(i + 3)] {
+                let xy = SIMD2(vertices[Int(index)].x, vertices[Int(index)].y)
+                if targetIsSupport {
+                    supportLow = simd_min(supportLow, xy)
+                    supportHigh = simd_max(supportHigh, xy)
+                } else {
+                    objectLow = simd_min(objectLow, xy)
+                    objectHigh = simd_max(objectHigh, xy)
+                }
+            }
+        }
+        let supportSpan = supportHigh - supportLow
+        let objectSpan = objectHigh - objectLow
+        guard supportSpan.x > objectSpan.x * 1.1 || supportSpan.y > objectSpan.y * 1.1 else { return nil }
+
+        var kept: [UInt32] = []
+        kept.reserveCapacity(indices.count)
+        var removed = 0
+        for t in 0..<triangleCount {
+            if parent[t] >= 0, root(t) == support.key {
+                removed += 1
+                continue
+            }
+            let i = t * 3
+            kept.append(indices[i])
+            kept.append(indices[i + 1])
+            kept.append(indices[i + 2])
+        }
+        guard removed > 0, !kept.isEmpty else { return nil }
+
+        // `seated` intentionally looks at every supplied vertex. Compact first so
+        // the removed table cannot keep affecting the exported bounding box.
+        var remap: [UInt32: UInt32] = [:]
+        var compactVertices: [SIMD3<Float>] = []
+        var compactIndices: [UInt32] = []
+        compactIndices.reserveCapacity(kept.count)
+        for index in kept {
+            if let mapped = remap[index] {
+                compactIndices.append(mapped)
+            } else {
+                let mapped = UInt32(compactVertices.count)
+                remap[index] = mapped
+                compactVertices.append(vertices[Int(index)])
+                compactIndices.append(mapped)
+            }
+        }
+        return SupportSurfaceRemoval(
+            mesh: MeshData.seated(vertices: compactVertices, indices: compactIndices),
+            removedTriangles: removed
+        )
+    }
+
     /// Slices everything below `trimMM` off the bottom and closes the opening with a
     /// flat face, so the print meets the bed on a solid surface instead of on whatever
     /// ragged geometry the scanner reconstructed underneath the object. The result is
@@ -383,4 +520,11 @@ struct MeshData: Sendable {
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         try text.write(to: url, atomically: true, encoding: .utf8)
     }
+}
+
+/// The result of removing a broad horizontal patch at the bottom of a scan.
+/// The triangle count is shown in the UI so the operation is never invisible.
+struct SupportSurfaceRemoval: Sendable {
+    let mesh: MeshData
+    let removedTriangles: Int
 }
