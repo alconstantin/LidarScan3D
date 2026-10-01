@@ -10,6 +10,12 @@ struct CaptureView: View {
     /// A complete slow circle at a new height is a meaningful unit of coverage. The
     /// count is preserved with the scan so the result can explain its confidence.
     @State private var scanPasses = 0
+    /// Apple's coverage dial can stop animating while it evaluates the scene. Keep an
+    /// independent, objective measure of whether the capture is still receiving photos.
+    @State private var lastShotCount = 0
+    @State private var lastPhotoAt = Date.now
+    @State private var captureStatusUpdatedAt = Date.now
+    @State private var isCaptureStalled = false
 
     var body: some View {
         ZStack {
@@ -48,6 +54,9 @@ struct CaptureView: View {
             }
             .padding()
         }
+        .task {
+            await monitorCaptureProgress()
+        }
     }
 
     @ViewBuilder
@@ -66,6 +75,7 @@ struct CaptureView: View {
                     .buttonStyle(.bordered)
                 Button("Start capture") {
                     scanPasses = 1
+                    resetCaptureWatchdog()
                     model.startCapturing(session)
                 }
                     .buttonStyle(.borderedProminent)
@@ -105,9 +115,24 @@ struct CaptureView: View {
                 .padding()
                 .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16))
             } else {
-                hint("Walk slowly around the object and keep it in frame.")
-                Button("Finish early") { model.finishCapture(session, passCount: max(scanPasses, 1)) }
-                    .buttonStyle(.bordered)
+                VStack(spacing: 8) {
+                    hint("Walk slowly around the object and keep it in frame.")
+                    if isFlippable {
+                        Button("Flip object & scan the bottom") { startFlip() }
+                            .buttonStyle(.bordered)
+                        Text("For the best alignment, make one steady circle before flipping. You can still flip manually if the coverage dial stalls.")
+                            .font(.footnote)
+                            .multilineTextAlignment(.center)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Text("Apple cannot reliably align a flipped pass for this plain or symmetric object. Scan another low pass from the same side instead.")
+                            .font(.footnote)
+                            .multilineTextAlignment(.center)
+                            .foregroundStyle(.secondary)
+                    }
+                    Button("Finish early") { model.finishCapture(session, passCount: max(scanPasses, 1)) }
+                        .buttonStyle(.bordered)
+                }
             }
 
         case .finishing:
@@ -159,13 +184,14 @@ struct CaptureView: View {
         captureLog.notice("begin new pass")
         session.beginNewScanPass()
         scanPasses += 1
+        resetCaptureWatchdog()
     }
 
-    /// A flipped pass is only valid from a session paused mid-capture: called while
-    /// capturing, `beginNewScanPassAfterFlip()` traps with "Must be .paused from
-    /// .capturing". Pausing also stops automatic shots of the object being turned over.
+    /// A flipped pass is valid from a session paused mid-capture; it does not need to
+    /// wait for Apple's coverage dial. Calling `beginNewScanPassAfterFlip()` while
+    /// still capturing traps, so pause first and only resume after the object is turned.
     private func startFlip() {
-        guard isCapturing, session.userCompletedScanPass, !isFlipping else { return }
+        guard isCapturing, !isFlipping else { return }
         captureLog.notice("pausing for flip")
         session.pause()
         isFlipping = true
@@ -183,6 +209,7 @@ struct CaptureView: View {
         // The flip sends the session back to `.ready` for a new box. Apple's sample
         // resumes once its flip sheet closes; without it detection would stay paused.
         if session.isPaused { session.resume() }
+        resetCaptureWatchdog()
         captureLog.notice("flip pass begun, state=\(session.state.label, privacy: .public)")
     }
 
@@ -211,10 +238,19 @@ struct CaptureView: View {
         VStack(spacing: 4) {
             Text("Pass \(max(scanPasses, 1)) · make one slow, complete circle")
                 .font(.callout.weight(.semibold))
+            Label(captureActivityText, systemImage: "camera.fill")
+                .font(.footnote.monospacedDigit())
+                .foregroundStyle(isCaptureStalled ? .orange : .secondary)
             Text("Change height for the next pass. Apple’s coverage ring decides when this pass is complete.")
                 .font(.footnote)
                 .multilineTextAlignment(.center)
                 .foregroundStyle(.secondary)
+            if isCaptureStalled {
+                Label("No new photo for \(lastPhotoAge) seconds. Move to a fresh angle; if the count stays still, Finish early safely builds from the photos already saved.", systemImage: "pause.circle")
+                    .font(.footnote)
+                    .multilineTextAlignment(.center)
+                    .foregroundStyle(.orange)
+            }
             if let issue = model.captureQuality.notableIssues.first {
                 Label(issue.recommendation, systemImage: issue.symbol)
                     .font(.footnote)
@@ -224,6 +260,52 @@ struct CaptureView: View {
         }
         .padding(10)
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 10))
+    }
+
+    private var lastPhotoAge: Int {
+        max(0, Int(captureStatusUpdatedAt.timeIntervalSince(lastPhotoAt)))
+    }
+
+    private var captureActivityText: String {
+        let noun = session.numberOfShotsTaken == 1 ? "photo" : "photos"
+        return "\(session.numberOfShotsTaken) \(noun) · last photo \(lastPhotoAge)s ago"
+    }
+
+    private func resetCaptureWatchdog() {
+        lastShotCount = session.numberOfShotsTaken
+        lastPhotoAt = .now
+        captureStatusUpdatedAt = .now
+        isCaptureStalled = false
+    }
+
+    /// ObjectCaptureView owns the dial, so it gives no usable "stalled" callback.
+    /// Sampling its public shot count gives the person scanning an honest status instead.
+    @MainActor
+    private func monitorCaptureProgress() async {
+        resetCaptureWatchdog()
+        while !Task.isCancelled {
+            try? await Task.sleep(for: .seconds(2))
+            guard !Task.isCancelled else { return }
+            captureStatusUpdatedAt = .now
+
+            guard isCapturing else {
+                isCaptureStalled = false
+                continue
+            }
+
+            let shots = session.numberOfShotsTaken
+            if shots > lastShotCount {
+                lastShotCount = shots
+                lastPhotoAt = .now
+                if isCaptureStalled {
+                    captureLog.notice("capture resumed, shots=\(shots, privacy: .public)")
+                }
+                isCaptureStalled = false
+            } else if shots > 0, lastPhotoAge >= 15, !isCaptureStalled {
+                isCaptureStalled = true
+                captureLog.notice("capture progress paused, shots=\(shots, privacy: .public) idleSeconds=\(lastPhotoAge, privacy: .public)")
+            }
+        }
     }
 
     private func hint(_ text: String) -> some View {

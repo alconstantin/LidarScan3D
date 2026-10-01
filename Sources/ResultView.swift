@@ -9,6 +9,15 @@ import simd
 struct ResultView: View {
     @Environment(AppModel.self) private var model
     let scan: ScanFolder
+    /// Supplied when this view was pushed from HomeView. The app's scan flow
+    /// presents results at the root instead, where changing `model.phase` is
+    /// the appropriate way back home.
+    let onDeleted: ((ScanFolder) -> Void)?
+
+    init(scan: ScanFolder, onDeleted: ((ScanFolder) -> Void)? = nil) {
+        self.scan = scan
+        self.onDeleted = onDeleted
+    }
 
     @State private var texturedScene: SCNScene?
     @State private var generatedScene: SCNScene?
@@ -33,6 +42,7 @@ struct ResultView: View {
     /// Bumped by every rebuild; a task whose stamp is stale drops its result.
     @State private var rebuildGeneration = 0
     @State private var isExporting = false
+    @State private var isDeleting = false
     @State private var showingDeleteConfirmation = false
     @State private var shareItem: ShareItem?
     @State private var showingCalibration = false
@@ -340,8 +350,8 @@ struct ResultView: View {
         .task { await load() }
         .sheet(item: $shareItem) { ActivityView(url: $0.url) }
         .overlay {
-            if isExporting {
-                ProgressView("Exporting…")
+            if isExporting || isDeleting {
+                ProgressView(isDeleting ? "Deleting scan…" : "Exporting…")
                     .padding(24)
                     .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
             }
@@ -587,11 +597,20 @@ struct ResultView: View {
     }
 
     private func deleteScan() {
-        do {
-            try scan.delete()
-            model.goHome()
-        } catch {
-            errorMessage = "Could not delete the scan: \(error.localizedDescription)"
+        isDeleting = true
+        errorMessage = nil
+        Task {
+            do {
+                try await Task.detached { try scan.delete() }.value
+                if let onDeleted {
+                    onDeleted(scan)
+                } else {
+                    model.goHome()
+                }
+            } catch {
+                errorMessage = "Could not delete the scan: \(error.localizedDescription)"
+                isDeleting = false
+            }
         }
     }
 

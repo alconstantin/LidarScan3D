@@ -7,6 +7,7 @@ struct HomeView: View {
     @State private var sampleError: String?
     @State private var scanPendingDeletion: ScanFolder?
     @State private var deletionError: String?
+    @State private var isDeleting = false
 
     var body: some View {
         NavigationStack(path: $path) {
@@ -15,10 +16,17 @@ struct HomeView: View {
                     Button {
                         model.startNewScan()
                     } label: {
-                        Label("New Scan", systemImage: "viewfinder")
+                        Text("New Scan")
                             .font(.headline)
                             .frame(maxWidth: .infinity)
                             .padding(.vertical, 8)
+                            // Keep the call to action optically centred. A Label
+                            // centres its icon and title as one group, making the
+                            // title itself look shifted to the right.
+                            .overlay(alignment: .leading) {
+                                Image(systemName: "viewfinder")
+                                    .padding(.leading, 16)
+                            }
                     }
                     .buttonStyle(.borderedProminent)
                     .disabled(!AppModel.isSupported)
@@ -74,7 +82,15 @@ struct HomeView: View {
             }
             .navigationTitle("LiDAR Scan 3D")
             .toolbar { EditButton() }
-            .navigationDestination(for: ScanFolder.self) { ResultView(scan: $0) }
+            .navigationDestination(for: ScanFolder.self) { scan in
+                ResultView(scan: scan) { deletedScan in
+                    // A result opened from this list is still inside this navigation
+                    // stack. Remove it from both the visible list and the stack so a
+                    // successful deletion returns here immediately.
+                    scans.removeAll { $0 == deletedScan }
+                    path.removeAll { $0 == deletedScan }
+                }
+            }
             // Listing the folder stats every scan on disk, which does not belong
             // on the main thread once a few dozen have piled up. Scans that never
             // produced a model are cleared out on the way.
@@ -93,20 +109,31 @@ struct HomeView: View {
             } message: {
                 Text("This permanently deletes its photos, checkpoints, model, exports and capture notes from this iPhone.")
             }
+            .overlay {
+                if isDeleting {
+                    ProgressView("Deleting scan…")
+                        .padding(24)
+                        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+                }
+            }
         }
     }
 
     private func deletePendingScan() {
         guard let scan = scanPendingDeletion else { return }
-        do {
-            try scan.delete()
-            scans.removeAll { $0 == scan }
-            path.removeAll { $0 == scan }
-            deletionError = nil
-        } catch {
-            deletionError = "Could not delete \(scan.name): \(error.localizedDescription)"
-        }
         scanPendingDeletion = nil
+        isDeleting = true
+        deletionError = nil
+        Task {
+            do {
+                try await Task.detached { try scan.delete() }.value
+                scans.removeAll { $0 == scan }
+                path.removeAll { $0 == scan }
+            } catch {
+                deletionError = "Could not delete \(scan.name): \(error.localizedDescription)"
+            }
+            isDeleting = false
+        }
     }
 
     private func openSample() {
