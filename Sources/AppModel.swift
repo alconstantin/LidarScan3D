@@ -17,6 +17,8 @@ final class AppModel {
     var phase: Phase = .home
     var progress: Double = 0
     var progressStatus = ""
+    /// Live capture conditions; persisted in the scan when the user finishes capture.
+    var captureQuality = ScanQuality()
 
     @ObservationIgnored private var currentScan: ScanFolder?
     @ObservationIgnored private var userCancelledCapture = false
@@ -54,6 +56,7 @@ final class AppModel {
             let scan = try ScanFolder.create()
             currentScan = scan
             userCancelledCapture = false
+            captureQuality = ScanQuality()
 
             var configuration = ObjectCaptureSession.Configuration()
             configuration.checkpointDirectory = scan.checkpointsURL
@@ -72,6 +75,21 @@ final class AppModel {
     func cancelCapture(_ session: ObjectCaptureSession) {
         userCancelledCapture = true
         session.cancel()
+    }
+
+    func startCapturing(_ session: ObjectCaptureSession) {
+        captureLog.notice("tapped Start capture, state=\(session.state.label, privacy: .public)")
+        session.startCapturing()
+        captureLog.notice("startCapturing returned, state=\(session.state.label, privacy: .public)")
+    }
+
+    /// Save the observations before `finish()` tears down the capture session. The
+    /// count is guidance, not a score: a long scan naturally takes many photos.
+    func finishCapture(_ session: ObjectCaptureSession, passCount: Int) {
+        captureQuality.shotCount = max(captureQuality.shotCount, session.numberOfShotsTaken)
+        captureQuality.passCount = max(captureQuality.passCount, passCount)
+        currentScan?.saveQuality(captureQuality)
+        session.finish()
     }
 
     private func observe(_ session: ObjectCaptureSession) {
@@ -113,8 +131,36 @@ final class AppModel {
                 guard self != nil else { return }
                 let names = feedback.map(\.label).sorted().joined(separator: ",")
                 captureLog.notice("feedback -> [\(names, privacy: .public)]")
+                self?.recordCaptureFeedback(feedback)
             }
         }
+    }
+
+    private func recordCaptureFeedback(_ feedback: Set<ObjectCaptureSession.Feedback>) {
+        var issues = Set<CaptureIssue>()
+        for item in feedback {
+            switch item {
+            case .environmentLowLight, .environmentTooDark:
+                issues.insert(.lowLight)
+            case .movingTooFast:
+                issues.insert(.movingTooFast)
+            case .outOfFieldOfView:
+                issues.insert(.framing)
+            case .objectTooClose:
+                issues.insert(.tooClose)
+            case .objectTooFar:
+                issues.insert(.tooFar)
+            case .objectNotDetected:
+                issues.insert(.objectNotDetected)
+            case .overCapturing:
+                issues.insert(.overCapturing)
+            case .objectNotFlippable:
+                issues.insert(.notFlippable)
+            @unknown default:
+                break
+            }
+        }
+        captureQuality.record(issues)
     }
 
     private func stopObservingFeedback() {

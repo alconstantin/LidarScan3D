@@ -349,6 +349,90 @@ struct MeshData: Sendable {
         )
     }
 
+    /// Drops disconnected fragments that are tiny beside the main reconstruction.
+    /// These are commonly bits of the background or a noisy LiDAR reflection. It
+    /// deliberately keeps every substantial component: a scanned object may really
+    /// have separate legs, a lid, or several parts placed together.
+    func removingSmallComponents() -> SmallComponentCleanup? {
+        guard triangleCount >= 2 else { return nil }
+
+        var parent = Array(0..<triangleCount)
+        var triangleArea = [Float](repeating: 0, count: triangleCount)
+        var edgeOwner: [EdgeKey: Int] = [:]
+
+        func root(_ value: Int) -> Int {
+            var node = value
+            while parent[node] != node { node = parent[node] }
+            return node
+        }
+
+        func join(_ lhs: Int, _ rhs: Int) {
+            let a = root(lhs), b = root(rhs)
+            guard a != b else { return }
+            parent[b] = a
+        }
+
+        for t in 0..<triangleCount {
+            let i = t * 3
+            let a = vertices[Int(indices[i])]
+            let b = vertices[Int(indices[i + 1])]
+            let c = vertices[Int(indices[i + 2])]
+            triangleArea[t] = simd_length(simd_cross(b - a, c - a)) / 2
+            for edge in [EdgeKey(indices[i], indices[i + 1]),
+                         EdgeKey(indices[i + 1], indices[i + 2]),
+                         EdgeKey(indices[i + 2], indices[i])] {
+                if let neighbour = edgeOwner[edge] { join(t, neighbour) }
+                else { edgeOwner[edge] = t }
+            }
+        }
+
+        var componentArea: [Int: Float] = [:]
+        for t in 0..<triangleCount {
+            componentArea[root(t), default: 0] += triangleArea[t]
+        }
+        guard componentArea.count > 1,
+              let largest = componentArea.values.max() else { return nil }
+
+        // At most half a percent of the main surface, and never discard a component
+        // with 25 mm² or more: that is large enough to be intentional on small models.
+        let minimumArea = max(largest * 0.005, 25)
+        let discarded = Set(componentArea.compactMap { $0.value < minimumArea ? $0.key : nil })
+        guard !discarded.isEmpty else { return nil }
+
+        var kept: [UInt32] = []
+        kept.reserveCapacity(indices.count)
+        var removedTriangles = 0
+        for t in 0..<triangleCount {
+            if discarded.contains(root(t)) {
+                removedTriangles += 1
+            } else {
+                let i = t * 3
+                kept.append(contentsOf: indices[i..<(i + 3)])
+            }
+        }
+        guard !kept.isEmpty else { return nil }
+
+        var remap: [UInt32: UInt32] = [:]
+        var compactVertices: [SIMD3<Float>] = []
+        var compactIndices: [UInt32] = []
+        compactIndices.reserveCapacity(kept.count)
+        for index in kept {
+            if let mapped = remap[index] {
+                compactIndices.append(mapped)
+            } else {
+                let mapped = UInt32(compactVertices.count)
+                remap[index] = mapped
+                compactVertices.append(vertices[Int(index)])
+                compactIndices.append(mapped)
+            }
+        }
+        return SmallComponentCleanup(
+            mesh: MeshData.seated(vertices: compactVertices, indices: compactIndices),
+            removedTriangles: removedTriangles,
+            removedComponents: discarded.count
+        )
+    }
+
     /// Slices everything below `trimMM` off the bottom and closes the opening with a
     /// flat face, so the print meets the bed on a solid surface instead of on whatever
     /// ragged geometry the scanner reconstructed underneath the object. The result is
@@ -527,4 +611,11 @@ struct MeshData: Sendable {
 struct SupportSurfaceRemoval: Sendable {
     let mesh: MeshData
     let removedTriangles: Int
+}
+
+/// The result of discarding isolated reconstruction fragments.
+struct SmallComponentCleanup: Sendable {
+    let mesh: MeshData
+    let removedTriangles: Int
+    let removedComponents: Int
 }

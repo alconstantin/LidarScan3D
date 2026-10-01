@@ -16,9 +16,10 @@ true millimetre scale, a flat base, and STL export.
 ## What it does
 
 - **Guided scanning.** Apple's capture UI with a bounding box, coverage dial and
-  live feedback ("move closer", "slow down", "too dark"), plus a flip pass so the
-  underside gets photographed too. The flip is not offered when Object Capture
-  reports that the object is too plain or symmetric to match up after turning.
+  live feedback ("move closer", "slow down", "too dark"), a clear pass counter,
+  and a flip pass so the underside gets photographed too. A capture-quality summary
+  follows the scan through to its result screen. The flip is not offered when Object
+  Capture reports that the object is too plain or symmetric to match up after turning.
 - **On-device reconstruction.** Photogrammetry runs on the phone; nothing is uploaded.
 - **True scale.** LiDAR gives real dimensions, usually within a few millimetres. A
   "Match real size" control rescales the model from one caliper measurement, taken
@@ -29,7 +30,11 @@ true millimetre scale, a flat base, and STL export.
   shown are the ones a ruler would give.
 - **Orientation.** Quarter turns put any of the six sides against the print bed.
 - **Flat base.** Slices the ragged underside off and caps it flat, so the print
-  adheres to the bed and stands straight.
+  adheres to the bed and stands straight. The cut plane has a precise millimetre
+  readout and the preview updates before export.
+- **Scan cleanup.** Detects and proposes removal of a broad table/turntable surface
+  at the bottom of a scan, and can remove tiny isolated background fragments. Both
+  operations are opt-in and show their triangle counts in the preview.
 - **Ready-to-print check.** Before you export, the app says whether the model is
   watertight (and if not, how many holes and bad edges it has), and whether it fits
   your printer's build volume, with one tap to scale it down if it does not. Bambu
@@ -127,10 +132,14 @@ while you turn the object over; tap *Continue* and fit the box around it again f
 the second pass. Reconstruction takes a few minutes and keeps the screen awake.
 
 **Prepare.** Open the scan to get a 3D preview with its real dimensions, already
-squared up with X and Y. Turn the model until the side you want to print on faces the
-grey bed. Enable *Flat base* and raise the trim until the ragged underside is gone —
-the preview shows the actual cut. Set the scale, or tap *Match real size*, say which
-side you measured, and enter its length.
+squared up with X and Y. Start with *Capture quality*: it records light, motion,
+distance and framing warnings from the actual scan. If the app proposes a *support
+surface*, inspect the preview and accept it only when it is clearly the table or
+turntable, not the object's own base. *Remove isolated fragments* clears only tiny,
+disconnected background pieces. Turn the model until the side you want to print on
+faces the grey bed. Enable *Flat base* and move the cut-plane slider until the ragged
+underside is gone; release it to see the exact capped result. Set the scale, or tap
+*Match real size*, say which side you measured, and enter its length.
 
 **Check.** Under *Ready to print?*, pick your printer. A green *Watertight* and *Fits
 the build plate* mean the file will open in Bambu Studio without a repair prompt. If it
@@ -156,6 +165,30 @@ land in `Exports` inside the scan's folder and are reachable from the Files app 
   detection picks up.
 - Take plenty of photos: 60 or more. The 40 mm test cube was captured from 30 and its
   faces came out with 2–3 mm of bulge.
+- Make one slow full circle per pass. For a symmetric cylinder that cannot be flipped,
+  take another circle from a lower or higher angle instead of repeatedly photographing
+  the same height.
+
+## Device test protocol: support surfaces
+
+Use the same cylinder and a ruler or calipers for all three trials. Photograph the
+object and record the X × Y × Z values shown by the app before each export.
+
+1. **Baseline:** scan on the usual table in bright, diffuse light. Walk slowly and do
+   one full circle; for a symmetric cylinder add a second pass at a different height.
+   Note capture-quality warnings and whether a support surface is proposed.
+2. **Cleaner setup:** repeat with the cylinder on a small, matte, contrasting support
+   or a sheet that clearly differs from the object. Keep free space around it. Compare
+   the number of support triangles proposed with the baseline.
+3. **Cleanup/export:** for each scan, inspect the unedited preview, then enable
+   *Remove support surface* only if its preview result removes the table. Enable
+   *Remove isolated fragments* if there are detached specks. Finally use *Flat base*
+   only as much as needed to cap the underside, export 3MF or STL, and verify its
+   dimensions and watertightness in the app and slicer.
+
+Success means the cylinder keeps its measured diameter and height within the expected
+LiDAR tolerance, the table and detached noise disappear, and the final print report is
+watertight or has fewer repair warnings than the unedited scan.
 
 ## How it works
 

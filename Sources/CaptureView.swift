@@ -7,6 +7,9 @@ struct CaptureView: View {
     let session: ObjectCaptureSession
     /// Set while the session is paused for the user to turn the object over.
     @State private var isFlipping = false
+    /// A complete slow circle at a new height is a meaningful unit of coverage. The
+    /// count is preserved with the scan so the result can explain its confidence.
+    @State private var scanPasses = 0
 
     var body: some View {
         ZStack {
@@ -37,6 +40,10 @@ struct CaptureView: View {
                         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 10))
                 }
 
+                if isCapturing, !isFlipping {
+                    captureProgress
+                }
+
                 controls
             }
             .padding()
@@ -58,9 +65,8 @@ struct CaptureView: View {
                 Button("Reset box") { _ = session.resetDetection() }
                     .buttonStyle(.bordered)
                 Button("Start capture") {
-                    captureLog.notice("tapped Start capture, state=\(session.state.label, privacy: .public)")
-                    session.startCapturing()
-                    captureLog.notice("startCapturing returned, state=\(session.state.label, privacy: .public)")
+                    scanPasses = 1
+                    model.startCapturing(session)
                 }
                     .buttonStyle(.borderedProminent)
             }
@@ -93,14 +99,14 @@ struct CaptureView: View {
                     }
                     Button("Scan again from another height") { beginPass() }
                         .buttonStyle(.bordered)
-                    Button("Finish & build model") { session.finish() }
+                    Button("Finish & build model") { model.finishCapture(session, passCount: max(scanPasses, 1)) }
                         .buttonStyle(.borderedProminent)
                 }
                 .padding()
                 .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16))
             } else {
                 hint("Walk slowly around the object and keep it in frame.")
-                Button("Finish early") { session.finish() }
+                Button("Finish early") { model.finishCapture(session, passCount: max(scanPasses, 1)) }
                     .buttonStyle(.bordered)
             }
 
@@ -152,6 +158,7 @@ struct CaptureView: View {
         }
         captureLog.notice("begin new pass")
         session.beginNewScanPass()
+        scanPasses += 1
     }
 
     /// A flipped pass is only valid from a session paused mid-capture: called while
@@ -172,6 +179,7 @@ struct CaptureView: View {
         }
         isFlipping = false
         session.beginNewScanPassAfterFlip()
+        scanPasses += 1
         // The flip sends the session back to `.ready` for a new box. Apple's sample
         // resumes once its flip sheet closes; without it detection would stay paused.
         if session.isPaused { session.resume() }
@@ -197,6 +205,25 @@ struct CaptureView: View {
         if feedback.contains(.environmentLowLight) { return "Low light: more light helps" }
         if feedback.contains(.outOfFieldOfView) { return "Keep the object in view" }
         return nil
+    }
+
+    private var captureProgress: some View {
+        VStack(spacing: 4) {
+            Text("Pass \(max(scanPasses, 1)) · make one slow, complete circle")
+                .font(.callout.weight(.semibold))
+            Text("Change height for the next pass. Apple’s coverage ring decides when this pass is complete.")
+                .font(.footnote)
+                .multilineTextAlignment(.center)
+                .foregroundStyle(.secondary)
+            if let issue = model.captureQuality.notableIssues.first {
+                Label(issue.recommendation, systemImage: issue.symbol)
+                    .font(.footnote)
+                    .multilineTextAlignment(.center)
+                    .foregroundStyle(.orange)
+            }
+        }
+        .padding(10)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 10))
     }
 
     private func hint(_ text: String) -> some View {

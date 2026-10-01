@@ -14,13 +14,18 @@ struct ResultView: View {
     @State private var mesh: MeshData?          // exactly as loaded, never re-derived
     @State private var oriented: MeshData?      // mesh after the current orientation
     @State private var supportClean: MeshData?  // oriented after a captured table is removed
-    @State private var flat: MeshData?          // oriented after the base cut
+    @State private var fragmentsClean: MeshData? // support-cleaned mesh with small detached noise removed
+    @State private var flat: MeshData?          // prepared mesh after the base cut
     @State private var orientation = MeshData.noRotation
     @State private var isReoriented = false
     @State private var errorMessage: String?
     @State private var scalePercent: Double = 100
     @State private var removeSupportSurface = false
     @State private var removedSupportTriangles = 0
+    @State private var suggestedSupportTriangles = 0
+    @State private var removeSmallComponents = false
+    @State private var removedFragmentTriangles = 0
+    @State private var removedFragments = 0
     @State private var flatBase = false
     @State private var trimFraction: Double = 0
     @State private var isPreparing = false
@@ -35,6 +40,7 @@ struct ResultView: View {
     /// produce a report: one for the mesh as loaded, one for the latest cut.
     @State private var loadedReport: PrintReport?
     @State private var supportReport: PrintReport?
+    @State private var fragmentsReport: PrintReport?
     @State private var cutReport: PrintReport?
     @AppStorage("printer") private var printer: Printer = .bambuP1X1
 
@@ -55,6 +61,15 @@ struct ResultView: View {
     /// Until the cut lands, the mesh it is being cut from stands in for it.
     private var activeMesh: MeshData? {
         if flatBase, let flat { return flat }
+        if removeSmallComponents, let fragmentsClean { return fragmentsClean }
+        if removeSupportSurface, let supportClean { return supportClean }
+        return oriented ?? mesh
+    }
+
+    /// The geometry that the cut plane is measured from. Support and fragment removal
+    /// can change the model's height, so the control must not keep using the original.
+    private var preCutMesh: MeshData? {
+        if removeSmallComponents, let fragmentsClean { return fragmentsClean }
         if removeSupportSurface, let supportClean { return supportClean }
         return oriented ?? mesh
     }
@@ -62,13 +77,14 @@ struct ResultView: View {
     /// Describes `activeMesh`, falling back the same way it does.
     private var activeReport: PrintReport? {
         if flatBase, flat != nil { return cutReport }
+        if removeSmallComponents, fragmentsClean != nil { return fragmentsReport }
         if removeSupportSurface, supportClean != nil { return supportReport }
         return loadedReport
     }
 
     /// The textured USDZ cannot show a turn or a cut, so anything that changes the
     /// geometry switches the preview to the mesh actually being exported.
-    private var showsGeneratedPreview: Bool { flatBase || removeSupportSurface || isReoriented }
+    private var showsGeneratedPreview: Bool { flatBase || removeSupportSurface || removeSmallComponents || isReoriented }
 
     /// Falls back rather than blanking: an empty preview reads as a hang.
     private var previewScene: SCNScene? {
@@ -76,7 +92,7 @@ struct ResultView: View {
     }
 
     private var trimMM: Float {
-        Float(trimFraction) * (oriented?.sizeMM.z ?? 0)
+        Float(trimFraction) * (preCutMesh?.sizeMM.z ?? 0)
     }
 
     /// The trim as it comes out of the printer. The cut itself happens before scaling,
@@ -123,6 +139,30 @@ struct ResultView: View {
                     Text("LiDAR gives true scale, usually within a few mm. For an exact fit, measure one side of the object with a ruler or calipers and tap Match real size.")
                 }
 
+                if let quality = scan.quality {
+                    Section {
+                        LabeledContent("Capture result", value: quality.grade)
+                        if quality.shotCount > 0 {
+                            LabeledContent("Photos", value: quality.shotCount.formatted())
+                        }
+                        if quality.passCount > 0 {
+                            LabeledContent("Coverage passes", value: quality.passCount.formatted())
+                        }
+                        ForEach(Array(quality.notableIssues.prefix(3)), id: \.self) { issue in
+                            Label(issue.title, systemImage: issue.symbol)
+                                .foregroundStyle(.orange)
+                        }
+                    } header: {
+                        Text("Capture quality")
+                    } footer: {
+                        if let issue = quality.notableIssues.first {
+                            Text(issue.recommendation)
+                        } else {
+                            Text("No capture warnings were recorded. Inspect the preview and measurements before printing.")
+                        }
+                    }
+                }
+
                 Section {
                     Picker("Printer", selection: $printer) {
                         ForEach(Printer.allCases) { Text($0.name).tag($0) }
@@ -165,6 +205,16 @@ struct ResultView: View {
                 }
 
                 Section {
+                    if !removeSupportSurface, suggestedSupportTriangles > 0 {
+                        Button {
+                            removeSupportSurface = true
+                            rebuild()
+                        } label: {
+                            Label("Possible support surface detected — review removal", systemImage: "tablecells")
+                        }
+                        .foregroundStyle(.orange)
+                    }
+
                     Toggle("Remove support surface", isOn: Binding(
                         get: { removeSupportSurface },
                         set: { isOn in
@@ -183,6 +233,24 @@ struct ResultView: View {
                         }
                     }
 
+                    Toggle("Remove isolated fragments", isOn: Binding(
+                        get: { removeSmallComponents },
+                        set: { isOn in
+                            removeSmallComponents = isOn
+                            rebuild()
+                        }
+                    ))
+
+                    if removeSmallComponents {
+                        if removedFragmentTriangles > 0 {
+                            Label("Removed \(removedFragments) fragment\(removedFragments == 1 ? "" : "s") · \(removedFragmentTriangles.formatted()) triangles", systemImage: "sparkles")
+                                .foregroundStyle(.secondary)
+                        } else if !isPreparing {
+                            Label("No small isolated fragments found", systemImage: "info.circle")
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+
                     // The rebuild rides the binding rather than onChange: the handler runs
                     // from the tap itself, so it cannot be lost if this row is rebuilt.
                     Toggle("Flat base", isOn: Binding(
@@ -197,7 +265,7 @@ struct ResultView: View {
                     if flatBase {
                         VStack(alignment: .leading) {
                             HStack {
-                                Text("Trim from bottom: \(mm(printedTrimMM)) mm")
+                                Text("Cut plane: \(mm(printedTrimMM)) mm above the bed")
                                 if isPreparing {
                                     Spacer()
                                     ProgressView().controlSize(.small)
@@ -205,9 +273,12 @@ struct ResultView: View {
                             }
                             // Held as a fraction of height, so a quarter turn onto a
                             // different side cannot leave the trim out of range.
-                            Slider(value: $trimFraction, in: 0...0.2, step: 0.005) { editing in
+                            Slider(value: $trimFraction, in: 0...0.2, step: 0.001) { editing in
                                 if !editing { rebuild() }
                             }
+                            Text("Release the slider to update the preview at this exact cut plane.")
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
                         }
                     }
                 } header: {
@@ -215,6 +286,8 @@ struct ResultView: View {
                 } footer: {
                     if removeSupportSurface {
                         Text("Removes the largest horizontal patch at the bottom, typically a table or turntable. Check the preview: a clean object can also have a flat base. Use Flat base afterwards to cap the opening for printing.")
+                    } else if removeSmallComponents {
+                        Text("Removes only disconnected pieces smaller than 0.5% of the main surface (and under 25 mm²). Check the preview when scanning an assembly with intentionally separate small parts.")
                     } else if flatBase {
                         Text("Slices the bottom off at the chosen height and caps it with a flat face, so the model sits solidly on the bed. Raise the trim until the ragged underside of the scan is gone. Measurements above already account for it.")
                     } else {
@@ -337,15 +410,19 @@ struct ResultView: View {
             return loaded
         }.value
         do {
-            let (loaded, report) = try await Task.detached { () throws -> (MeshData, PrintReport) in
+            let (loaded, report, supportSuggestion) = try await Task.detached { () throws -> (MeshData, PrintReport, Int) in
                 // Squared up once, here, so every size and turn downstream starts from
                 // a model whose sides run along X and Y rather than at the capture's heading.
                 let loaded = try MeshData.load(from: url).squaredUp()
-                return (loaded, loaded.printReport())
+                // Detection only proposes a cleanup. It never changes geometry until
+                // the person looking at the preview explicitly accepts it.
+                let supportSuggestion = loaded.removingSupportSurface()?.removedTriangles ?? 0
+                return (loaded, loaded.printReport(), supportSuggestion)
             }.value
             mesh = loaded
             oriented = loaded
             loadedReport = report
+            suggestedSupportTriangles = supportSuggestion
         } catch {
             errorMessage = "Could not read the model: \(error.localizedDescription)"
         }
@@ -361,20 +438,27 @@ struct ResultView: View {
         let generation = rebuildGeneration
         let rotation = orientation
         let removeSupport = removeSupportSurface
+        let removeFragments = removeSmallComponents
         let fraction = flatBase ? Float(trimFraction) : 0
 
         Task {
             // The scene is built here too, not after the hop back. makeGeometry walks
             // every triangle to accumulate normals and then packs two vertex-sized
             // arrays, which on a scan-scale mesh is the most expensive step of the lot.
-            let result = await Task.detached { () -> (MeshData, MeshData?, MeshData?, Int, SCNScene, PrintReport?, PrintReport?) in
+            let result = await Task.detached { () -> (MeshData, MeshData?, MeshData?, MeshData?, Int, Int, Int, SCNScene, PrintReport?, PrintReport?, PrintReport?) in
                 let oriented = mesh.rotated(by: rotation)
                 let removal = removeSupport ? oriented.removingSupportSurface() : nil
-                let prepared = removal?.mesh ?? oriented
+                let supportPrepared = removal?.mesh ?? oriented
+                let fragmentRemoval = removeFragments ? supportPrepared.removingSmallComponents() : nil
+                let prepared = fragmentRemoval?.mesh ?? supportPrepared
                 let cut = fraction > 0 ? prepared.flatBase(trimMM: prepared.sizeMM.z * fraction) : nil
                 let exported = cut ?? prepared
-                return (oriented, removal?.mesh, cut, removal?.removedTriangles ?? 0,
-                        Self.makeScene(for: exported), removal?.mesh.printReport(), cut?.printReport())
+                return (oriented, removal?.mesh, fragmentRemoval?.mesh, cut,
+                        removal?.removedTriangles ?? 0,
+                        fragmentRemoval?.removedTriangles ?? 0,
+                        fragmentRemoval?.removedComponents ?? 0,
+                        Self.makeScene(for: exported), removal?.mesh.printReport(),
+                        fragmentRemoval?.mesh.printReport(), cut?.printReport())
             }.value
 
             // Turns are cheap but a cut on a large scan is not, so two quick taps can
@@ -383,11 +467,15 @@ struct ResultView: View {
             guard generation == rebuildGeneration else { return }
             oriented = result.0
             supportClean = result.1
-            flat = result.2
-            removedSupportTriangles = result.3
-            generatedScene = result.4
-            supportReport = result.5
-            cutReport = result.6
+            fragmentsClean = result.2
+            flat = result.3
+            removedSupportTriangles = result.4
+            removedFragmentTriangles = result.5
+            removedFragments = result.6
+            generatedScene = result.7
+            supportReport = result.8
+            fragmentsReport = result.9
+            cutReport = result.10
             isPreparing = false
         }
     }
@@ -446,6 +534,7 @@ struct ResultView: View {
         // named usefully, so uniqueURL catches what is left.
         var suffix = ""
         if removeSupportSurface, supportClean != nil { suffix += " support removed" }
+        if removeSmallComponents, fragmentsClean != nil { suffix += " fragments removed" }
         if flatBase { suffix += String(format: " flat %.1fmm", Double(printedTrimMM)) }
         let baseName = "\(scan.name) \(Int(scalePercent.rounded()))pct\(suffix)"
         let exportsURL = scan.exportsURL
