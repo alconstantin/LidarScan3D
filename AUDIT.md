@@ -211,7 +211,8 @@ Remaining validation and improvements:
 - Intersection checks exclude pairs sharing a welded vertex and have a work budget;
   they are not a complete geometric validity proof. Negative shells can represent
   valid internal cavities and are deliberately shown for review rather than repaired.
-- Thumbnails, selected-face issue overlays, wall thickness analysis, automatic mesh
+- At this remediation stage, thumbnails and issue overlays were still pending;
+  the next section records their implementation. Wall thickness analysis, automatic
   repair and full VoiceOver/Dynamic Type device validation remain future work.
 
 
@@ -238,4 +239,19 @@ vertex references, flipped edges, texture seams, intersections, inward shells an
 invalid recipe rejection. Unsigned iPhoneOS Release build and independent sample
 STL/3MF export topology checks pass. Thumbnail rendering, overlay readability,
 axis labels and accessibility still require visual verification on an iPhone;
-these changes have not been installed on hardware or pushed to GitHub.
+these changes have not been installed on hardware. They were committed as `0c4fff8`
+and pushed/tagged as v1.2; publication was confirmed from user Terminal output.
+Tagged workflow completion remains unverified.
+
+
+## Test-round preparation — 7 October 2026
+
+Documentation now distinguishes tagged source, build identifiers, release assets
+and hardware validation. README and INSTALL describe current recovery/storage/
+inspection behavior; TESTING provides automated preflight, sample-first checks,
+device/slicer scenarios and an evidence template. CHANGELOG records v1.1/v1.2,
+and RELEASING describes future versions without moving existing tags.
+
+The next step is to confirm the intended Actions run and install a known binary,
+then execute the test matrix. No new hardware test, release build success or
+production-readiness claim is introduced by this documentation update.

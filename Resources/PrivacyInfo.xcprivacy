@@ -11,7 +11,7 @@
 	<array/>
 	<key>NSPrivacyAccessedAPITypes</key>
 	<array>
-		<!-- @AppStorage remembers which printer the user prints on. CA92.1: this app's
+		<!-- @AppStorage remembers the printer and custom dimensions. CA92.1: this app's
 		     own settings, read only by this app. -->
 		<dict>
 			<key>NSPrivacyAccessedAPIType</key>
@@ -21,9 +21,9 @@
 				<string>CA92.1</string>
 			</array>
 		</dict>
-		<!-- ScanFolder.removeIncomplete reads the creation date of scan folders in the
-		     app's own Documents directory. C617.1: timestamps of files inside the app
-		     container, never shown or sent off the device. -->
+		<!-- Retained for file APIs used within the app container. C617.1 covers
+		     timestamps accessed inside that container. The old incomplete-scan
+		     timestamp cleanup has been removed; interrupted scans are retained. -->
 		<dict>
 			<key>NSPrivacyAccessedAPIType</key>
 			<string>NSPrivacyAccessedAPICategoryFileTimestamp</string>

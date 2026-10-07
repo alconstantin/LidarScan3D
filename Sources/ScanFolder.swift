@@ -77,7 +77,7 @@ struct ScanQuality: Codable, Sendable {
     }
 }
 
-/// One scan on disk: Documents/Scans/<name>/{Images, Checkpoints, Exports, model.usdz}.
+/// One stable scan folder owns input, model, recipe, display name, thumbnail and exports.
 /// The bundled sample has a plain model.obj instead of a textured USDZ.
 struct ScanFolder: Identifiable, Hashable, Sendable {
     let url: URL
