@@ -43,6 +43,19 @@ struct ResultView: View {
     @State private var isPreparing = false
     /// Bumped by every rebuild; a task whose stamp is stale drops its result.
     @State private var rebuildGeneration = 0
+    @State private var rebuildTask: Task<Void, Never>?
+    @State private var preparationWorker: MeshPreparationWorker?
+    @State private var preparationLoaded = false
+    @State private var preparationError: String?
+    @State private var compareOriginal = false
+    @State private var showingReset = false
+    @State private var showingRename = false
+    @State private var renameText = ""
+    @State private var displayName = ""
+    @State private var storageBytes: Int64 = 0
+    @State private var sourcePhotoCount = 0
+    @State private var showingPhotoDeletion = false
+    @State private var isDeletingPhotos = false
     @State private var isExporting = false
     @State private var isDeleting = false
     @State private var showingDeleteConfirmation = false
@@ -58,6 +71,20 @@ struct ResultView: View {
     @State private var smoothingReport: PrintReport?
     @State private var cutReport: PrintReport?
     @AppStorage("printer") private var printer: Printer = .bambuP1X1
+    @AppStorage("customPrinterWidth") private var customWidth: Double = 220
+    @AppStorage("customPrinterDepth") private var customDepth: Double = 220
+    @AppStorage("customPrinterHeight") private var customHeight: Double = 250
+
+    private var buildVolume: BuildVolume? {
+        if printer != .other { return printer.buildVolume }
+        guard [customWidth, customDepth, customHeight].allSatisfy({ $0.isFinite && $0 > 0 && $0 <= 10_000 }) else { return nil }
+        return BuildVolume(width: Float(customWidth), depth: Float(customDepth), height: Float(customHeight))
+    }
+
+    private var preparation: Preparation {
+        Preparation(rotation: orientation.vector, scalePercent: scalePercent, removeSupport: removeSupportSurface,
+                    removeFragments: removeSmallComponents, smoothing: smoothingLevel, flatBase: flatBase, trimFraction: trimFraction)
+    }
 
     private enum Format { case threeMF, stl, obj }
 
@@ -93,6 +120,7 @@ struct ResultView: View {
 
     /// Describes `activeMesh`, falling back the same way it does.
     private var activeReport: PrintReport? {
+        if isPreparing { return nil }
         if flatBase, flat != nil { return cutReport }
         if smoothingLevel != .off, smoothed != nil { return smoothingReport }
         if removeSmallComponents, fragmentsClean != nil { return fragmentsReport }
@@ -106,7 +134,7 @@ struct ResultView: View {
 
     /// Falls back rather than blanking: an empty preview reads as a hang.
     private var previewScene: SCNScene? {
-        showsGeneratedPreview ? (generatedScene ?? texturedScene) : texturedScene
+        compareOriginal ? texturedScene : (showsGeneratedPreview ? (generatedScene ?? texturedScene) : texturedScene)
     }
 
     private var trimMM: Float {
@@ -126,6 +154,7 @@ struct ResultView: View {
                 if let scene = previewScene {
                     SceneView(scene: scene, options: [.allowsCameraControl, .autoenablesDefaultLighting])
                         .frame(height: 320)
+                        .accessibilityLabel(compareOriginal ? "Original scan preview" : "Prepared model preview")
                         .id(ObjectIdentifier(scene))
                 } else {
                     ProgressView().frame(maxWidth: .infinity, minHeight: 320)
@@ -134,6 +163,19 @@ struct ResultView: View {
             .listRowInsets(EdgeInsets())
 
             if let activeMesh {
+                Section {
+                    Toggle("Compare with original scan", isOn: $compareOriginal)
+                    Text("X: width · Y: depth · Z: height. Exports use the prepared model.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Button("Reset all preparation", role: .destructive) { showingReset = true }
+                    Button("Rename scan…") { renameText = displayName; showingRename = true }
+                    LabeledContent("Storage", value: ByteCountFormatter.string(fromByteCount: storageBytes, countStyle: .file))
+                    if sourcePhotoCount > 0 {
+                        Button("Remove source photos…") { showingPhotoDeletion = true }
+                            .disabled(isDeletingPhotos || isExporting)
+                    }
+                    if let preparationError { Text(preparationError).foregroundStyle(.red) }
+                }
                 Section {
                     let size = activeMesh.sizeMM * Float(scalePercent / 100)
                     LabeledContent("Size (X × Y × Z)", value: "\(mm(size.x)) × \(mm(size.y)) × \(mm(size.z)) mm")
@@ -185,7 +227,13 @@ struct ResultView: View {
                     Picker("Printer", selection: $printer) {
                         ForEach(Printer.allCases) { Text($0.name).tag($0) }
                     }
-                    if let volume = printer.buildVolume {
+                    if printer == .other {
+                        LabeledContent("Width (mm)") { TextField("Width", value: $customWidth, format: .number).keyboardType(.decimalPad).multilineTextAlignment(.trailing) }
+                        LabeledContent("Depth (mm)") { TextField("Depth", value: $customDepth, format: .number).keyboardType(.decimalPad).multilineTextAlignment(.trailing) }
+                        LabeledContent("Height (mm)") { TextField("Height", value: $customHeight, format: .number).keyboardType(.decimalPad).multilineTextAlignment(.trailing) }
+                        if buildVolume == nil { Text("Enter printer dimensions between 0 and 10,000 mm.").foregroundStyle(.orange) }
+                    }
+                    if let volume = buildVolume {
                         plateFit(activeMesh, in: volume)
                     }
                     if let report = activeReport {
@@ -197,6 +245,7 @@ struct ResultView: View {
                 } header: {
                     Text("Ready to print?")
                 } footer: {
+                    Text("Surface checks do not assess wall thickness or supports. Inspect the model and sliced layers before printing.")
                     if let report = activeReport, !report.isWatertight {
                         Text("Scans are not always closed, and holes usually sit in the underside. Try a flat base, or raise its trim. Otherwise Bambu Studio offers Fix Model when it opens the file (on Windows), and most other slicers repair on import.")
                     }
@@ -309,7 +358,8 @@ struct ResultView: View {
                             // Held as a fraction of height, so a quarter turn onto a
                             // different side cannot leave the trim out of range.
                             Slider(value: $trimFraction, in: 0...0.2, step: 0.001) { editing in
-                                if !editing { rebuild() }
+                                if editing { isPreparing = true }
+                                else { rebuild() }
                             }
                             Text("Release the slider to update the preview at this exact cut plane.")
                                 .font(.footnote)
@@ -352,7 +402,7 @@ struct ResultView: View {
                 } footer: {
                     Text("3MF states its units and opens centred on the chosen printer's plate. STL is the universal fallback.")
                 }
-                .disabled(isExporting || isPreparing)
+                .disabled(isExporting || isPreparing || isDeleting)
             } else if errorMessage == nil {
                 Section { ProgressView("Reading mesh…") }
             }
@@ -361,7 +411,7 @@ struct ResultView: View {
                 Section { Text(errorMessage).foregroundStyle(.red) }
             }
         }
-        .navigationTitle(scan.name)
+        .navigationTitle(displayName.isEmpty ? scan.name : displayName)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
@@ -370,9 +420,45 @@ struct ResultView: View {
                 } label: {
                     Label("Delete scan", systemImage: "trash")
                 }
+                .disabled(isExporting || isDeleting || isDeletingPhotos)
             }
         }
         .task { await load() }
+        .onChange(of: scalePercent) { _, _ in savePreparation() }
+        .onDisappear {
+            rebuildTask?.cancel()
+            rebuildGeneration += 1
+            isPreparing = false
+            savePreparation()
+        }
+        .confirmationDialog("Reset preparation?", isPresented: $showingReset, titleVisibility: .visible) {
+            Button("Reset preparation", role: .destructive) {
+                preparationLoaded = true
+                restore(Preparation())
+                compareOriginal = false
+                rebuild()
+            }
+        } message: { Text("Resets scale, orientation, cleanup, smoothing and the base cut. Your original scan and exported files are preserved.") }
+        .alert("Rename scan", isPresented: $showingRename) {
+            TextField("Scan name", text: $renameText)
+            Button("Save") {
+                do { try scan.rename(renameText); displayName = scan.name }
+                catch { errorMessage = "Enter a name between 1 and 80 characters. The name could not be saved." }
+            }
+            Button("Cancel", role: .cancel) {}
+        }
+        .confirmationDialog("Remove source photos?", isPresented: $showingPhotoDeletion, titleVisibility: .visible) {
+            Button("Remove source photos", role: .destructive) {
+                isDeletingPhotos = true
+                Task {
+                    do {
+                        try await Task.detached { try scan.deleteSourcePhotos() }.value
+                        await refreshStorage()
+                    } catch { errorMessage = "Could not remove photos: \(error.localizedDescription)" }
+                    isDeletingPhotos = false
+                }
+            }
+        } message: { Text("Keeps the model, preparation and exports. The original photos are permanently deleted and will no longer be available for reconstruction.") }
         .sheet(item: $shareItem) { ActivityView(url: $0.url) }
         .overlay {
             if isExporting || isDeleting {
@@ -413,7 +499,7 @@ struct ResultView: View {
                       systemImage: "exclamationmark.triangle.fill")
                     .foregroundStyle(.orange)
                 if fitting >= Self.scaleRange.lowerBound {
-                    Button("Scale to fit (\(Int(fitting)) %)") { scalePercent = fitting }
+                    Button("Scale to fit (\(Int(fitting)) %)") { scalePercent = min(fitting, Self.scaleRange.upperBound) }
                 }
             }
         }
@@ -422,7 +508,7 @@ struct ResultView: View {
     @ViewBuilder
     private func watertightness(_ report: PrintReport) -> some View {
         if report.isWatertight {
-            Label("Watertight: slices without repair", systemImage: "checkmark.seal.fill")
+            Label("Surface checks passed", systemImage: "checkmark.seal.fill")
                 .foregroundStyle(.green)
         } else {
             let problems: [String?] = [
@@ -430,9 +516,12 @@ struct ResultView: View {
                 report.nonManifoldEdges > 0 ? "\(report.nonManifoldEdges.formatted()) non-manifold edges" : nil,
                 report.flippedEdges > 0 ? "\(report.flippedEdges.formatted()) edges between flipped faces" : nil,
                 report.degenerateTriangles > 0 ? "\(report.degenerateTriangles.formatted()) collapsed triangles" : nil,
-                report.volumeMM3 <= 0 ? "surface is inside out" : nil,
+                report.inwardShells > 0 ? "\(report.inwardShells) inward or zero-volume shells (review cavities)" : nil,
+                report.intersectingTriangles > 0 ? "intersecting triangles" : nil,
+                !report.intersectionCheckComplete ? "intersection check incomplete" : nil,
+                report.volumeMM3 <= 0 ? "no positive enclosed volume" : nil,
             ]
-            Label("Not watertight: \(problems.compactMap { $0 }.joined(separator: ", "))", systemImage: "exclamationmark.triangle.fill")
+            Label("Surface needs review: \(problems.compactMap { $0 }.joined(separator: ", "))", systemImage: "exclamationmark.triangle.fill")
                 .foregroundStyle(.orange)
         }
     }
@@ -452,88 +541,123 @@ struct ResultView: View {
     }
 
     private func load() async {
-        guard mesh == nil else { return }
+        displayName = scan.name
+        await refreshStorage()
+        if mesh != nil { rebuild(); return }
         let url = scan.modelURL
         // Parsing a textured USDZ is seconds of work on a real scan, and SCNScene(url:)
         // does all of it synchronously on whatever thread asks.
-        texturedScene = await Task.detached {
-            guard let loaded = try? SCNScene(url: url, options: nil) else { return nil }
+        let sceneTask = Task.detached {
+            guard let loaded = try? SCNScene(url: url, options: nil) else { return nil as SCNScene? }
             loaded.background.contents = UIColor.secondarySystemBackground
             return loaded
-        }.value
+        }
+        texturedScene = await withTaskCancellationHandler { await sceneTask.value } onCancel: { sceneTask.cancel() }
+        guard !Task.isCancelled else { return }
         do {
-            let (loaded, report, supportSuggestion) = try await Task.detached { () throws -> (MeshData, PrintReport, Int) in
+            let loadTask = Task.detached { () throws -> (MeshData, PrintReport, Int) in
                 // Squared up once, here, so every size and turn downstream starts from
                 // a model whose sides run along X and Y rather than at the capture's heading.
+                try Task.checkCancellation()
                 let loaded = try MeshData.load(from: url).squaredUp()
+                try Task.checkCancellation()
                 // Detection only proposes a cleanup. It never changes geometry until
                 // the person looking at the preview explicitly accepts it.
                 let supportSuggestion = loaded.removingSupportSurface()?.removedTriangles ?? 0
-                return (loaded, loaded.printReport(), supportSuggestion)
-            }.value
+                let report = loaded.printReport()
+                try Task.checkCancellation()
+                return (loaded, report, supportSuggestion)
+            }
+            let (loaded, report, supportSuggestion) = try await withTaskCancellationHandler { try await loadTask.value } onCancel: { loadTask.cancel() }
+            guard !Task.isCancelled else { return }
             mesh = loaded
             oriented = loaded
             loadedReport = report
             suggestedSupportTriangles = supportSuggestion
+            preparationWorker = MeshPreparationWorker(loaded)
+            do { restore(try Preparation.load(from: scan.preparationURL)) }
+            catch { preparationError = "Saved preparation could not be read. Reset preparation to replace it, or preserve the file for recovery." }
+            preparationLoaded = preparationError == nil
+            if showsGeneratedPreview { rebuild() }
+        } catch is CancellationError {
+            return
         } catch {
             errorMessage = "Could not read the model: \(error.localizedDescription)"
         }
     }
 
-    /// Re-derives every generated mesh and the preview from the untouched original.
-    /// Turning, cleanup, smoothing and trimming all come through here, so neither
-    /// accumulates rounding error across repeated taps — only the quaternion does.
+    private func refreshStorage() async {
+        let values = await Task.detached { (scan.storageBytes, scan.imageCount) }.value
+        storageBytes = values.0
+        sourcePhotoCount = values.1
+    }
+
+    private func restore(_ recipe: Preparation) {
+        orientation = recipe.quaternion
+        isReoriented = simd_length(orientation.imag) > 1e-6
+        scalePercent = recipe.scalePercent
+        removeSupportSurface = recipe.removeSupport
+        removeSmallComponents = recipe.removeFragments
+        smoothingLevel = recipe.smoothing
+        flatBase = recipe.flatBase
+        trimFraction = recipe.trimFraction
+    }
+
+    private func savePreparation() {
+        guard preparationLoaded, !isDeleting else { return }
+        do {
+            try preparation.save(to: scan.preparationURL)
+            preparationError = nil
+        } catch {
+            preparationError = "Could not save preparation: \(error.localizedDescription)"
+        }
+    }
+
+    /// A serial worker caches unchanged stages. Cancellation reaches its synchronous
+    /// mesh loops; the generation guard also protects against results already in flight.
     private func rebuild() {
-        guard let mesh else { return }
+        guard let worker = preparationWorker else { return }
+        savePreparation()
+        rebuildTask?.cancel()
         isPreparing = true
         rebuildGeneration += 1
         let generation = rebuildGeneration
-        let rotation = orientation
-        let removeSupport = removeSupportSurface
-        let removeFragments = removeSmallComponents
-        let smoothing = smoothingLevel
-        let fraction = flatBase ? Float(trimFraction) : 0
-
-        Task {
-            // The scene is built here too, not after the hop back. makeGeometry walks
-            // every triangle to accumulate normals and then packs two vertex-sized
-            // arrays, which on a scan-scale mesh is the most expensive step of the lot.
-            let result = await Task.detached { () -> (MeshData, MeshData?, MeshData?, MeshData?, MeshData?, Int, Int, Int, SCNScene, PrintReport?, PrintReport?, PrintReport?, PrintReport?) in
-                let oriented = mesh.rotated(by: rotation)
-                let removal = removeSupport ? oriented.removingSupportSurface() : nil
-                let supportPrepared = removal?.mesh ?? oriented
-                let fragmentRemoval = removeFragments ? supportPrepared.removingSmallComponents() : nil
-                let cleaned = fragmentRemoval?.mesh ?? supportPrepared
-                let smoothingResult = smoothing == .off ? nil : cleaned.smoothed(level: smoothing)
-                let prepared = smoothingResult ?? cleaned
-                let cut = fraction > 0 ? prepared.flatBase(trimMM: prepared.sizeMM.z * fraction) : nil
-                let exported = cut ?? prepared
-                return (oriented, removal?.mesh, fragmentRemoval?.mesh, smoothingResult, cut,
-                        removal?.removedTriangles ?? 0,
-                        fragmentRemoval?.removedTriangles ?? 0,
-                        fragmentRemoval?.removedComponents ?? 0,
-                        Self.makeScene(for: exported), removal?.mesh.printReport(),
-                        fragmentRemoval?.mesh.printReport(), smoothingResult?.printReport(), cut?.printReport())
-            }.value
-
-            // Turns are cheap but a cut on a large scan is not, so two quick taps can
-            // finish out of order. Only the newest rebuild may publish, or the mesh on
-            // screen and in the export stops matching the accumulated orientation.
-            guard generation == rebuildGeneration else { return }
-            oriented = result.0
-            supportClean = result.1
-            fragmentsClean = result.2
-            smoothed = result.3
-            flat = result.4
-            removedSupportTriangles = result.5
-            removedFragmentTriangles = result.6
-            removedFragments = result.7
-            generatedScene = result.8
-            supportReport = result.9
-            fragmentsReport = result.10
-            smoothingReport = result.11
-            cutReport = result.12
-            isPreparing = false
+        let recipe = preparation
+        rebuildTask = Task {
+            do {
+                try await Task.sleep(for: .milliseconds(150))
+                let result = try await worker.prepare(recipe)
+                try Task.checkCancellation()
+                let sceneTask = Task.detached { Self.makeScene(for: result.mesh) }
+                let scene = await withTaskCancellationHandler {
+                    await sceneTask.value
+                } onCancel: { sceneTask.cancel() }
+                try Task.checkCancellation()
+                guard generation == rebuildGeneration else { return }
+                oriented = result.oriented
+                supportClean = result.support?.mesh
+                fragmentsClean = result.fragments?.mesh
+                smoothed = result.smoothed
+                flat = result.cut
+                removedSupportTriangles = result.support?.removedTriangles ?? 0
+                removedFragmentTriangles = result.fragments?.removedTriangles ?? 0
+                removedFragments = result.fragments?.removedComponents ?? 0
+                generatedScene = scene
+                // One report describes the final published mesh, whichever stage won.
+                loadedReport = result.report
+                supportReport = result.report
+                fragmentsReport = result.report
+                smoothingReport = result.report
+                cutReport = result.report
+                isPreparing = false
+            } catch is CancellationError {
+                if generation == rebuildGeneration { isPreparing = false }
+            } catch {
+                if generation == rebuildGeneration {
+                    errorMessage = "Preparation failed: \(error.localizedDescription)"
+                    isPreparing = false
+                }
+            }
         }
     }
 
@@ -573,17 +697,19 @@ struct ResultView: View {
     }
 
     private func applyCalibration() {
-        guard let activeMesh,
+        guard !isPreparing, let activeMesh,
               let real = Double(calibrationText.replacingOccurrences(of: ",", with: ".")),
-              real > 0 else { return }
-        let scanned = calibrationSide.length(of: activeMesh)
-        guard scanned > 0 else { return }
-        let percent = real / Double(scanned) * 100
-        scalePercent = min(max(percent, Self.scaleRange.lowerBound), Self.scaleRange.upperBound)
+              let percent = Preparation.calibrationPercent(realMM: real, scannedMM: Double(calibrationSide.length(of: activeMesh))) else {
+            errorMessage = "Enter a positive measurement requiring a scale between 10% and 500%. The requested size was not applied. Wait for preparation to finish before calibrating."
+            return
+        }
+        errorMessage = nil
+        scalePercent = percent
+        savePreparation()
     }
 
     private func export(_ format: Format) {
-        guard let mesh = activeMesh else { return }
+        guard !isPreparing, !isExporting, !isDeleting, let mesh = activeMesh else { return }
         isExporting = true
         errorMessage = nil
         let scale = Float(scalePercent / 100)
@@ -594,12 +720,12 @@ struct ResultView: View {
         if removeSmallComponents, fragmentsClean != nil { suffix += " fragments removed" }
         if smoothingLevel != .off, smoothed != nil { suffix += " smooth \(smoothingLevel.rawValue)" }
         if flatBase { suffix += String(format: " flat %.1fmm", Double(printedTrimMM)) }
-        let baseName = "\(scan.name) \(Int(scalePercent.rounded()))pct\(suffix)"
+        let baseName = "\(scan.exportName) \(Int(scalePercent.rounded()))pct\(suffix)"
         let exportsURL = scan.exportsURL
         let title = scan.name
         // Plate coordinates start at the front left corner. With no known printer the
         // model stays at the origin, and the slicer places it.
-        let plateCentre = printer.buildVolume.map { SIMD2($0.width / 2, $0.depth / 2) } ?? .zero
+        let plateCentre = buildVolume.map { SIMD2($0.width / 2, $0.depth / 2) } ?? .zero
 
         Task {
             do {
@@ -628,6 +754,9 @@ struct ResultView: View {
     }
 
     private func deleteScan() {
+        guard !isExporting, !isDeleting, !isDeletingPhotos else { return }
+        rebuildTask?.cancel()
+        rebuildGeneration += 1
         isDeleting = true
         errorMessage = nil
         Task {

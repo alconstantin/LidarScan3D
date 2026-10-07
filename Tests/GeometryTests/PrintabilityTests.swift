@@ -90,7 +90,7 @@ final class PrintabilityTests: XCTestCase {
     func testSampleFlatBaseCutsThroughTheFootRing() throws {
         let sample = try Solids.sampleVase()
         let cut = sample.flatBase(trimMM: sample.sizeMM.z * 0.02)
-        XCTAssertTrue(cut.printReport().isWatertight)
+        XCTAssertTrue(cut.printReport().isWatertight, "\(cut.printReport())")
 
         var capOverRecess = 0
         for t in 0..<cut.triangleCount {

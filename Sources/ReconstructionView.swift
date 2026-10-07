@@ -17,7 +17,8 @@ struct ReconstructionView: View {
                 .font(.footnote)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
-            Button("Cancel", role: .destructive) { model.cancelReconstruction() }
+            Button(model.isCancelling ? "Cancelling…" : "Cancel", role: .destructive) { model.cancelReconstruction() }
+                .disabled(model.isCancelling)
         }
         .padding(32)
     }

@@ -146,9 +146,9 @@ def audit(path, weld_microns=1):
     ok = boundary == 0 and excess == 0 and flipped == 0 and vol > 0
     print()
     if ok:
-        print("  WATERTIGHT — a slicer should take this without repair.")
+        print("  TOPOLOGY CHECKS PASSED — inspect shell intersections and sliced layers before printing.")
     else:
-        print("  NOT WATERTIGHT — a slicer will either repair it or complain.")
+        print("  TOPOLOGY NEEDS REVIEW — inspect or repair the model before printing.")
         if boundary:
             print(f"    {boundary} boundary edges means the surface has holes in it.")
         if excess:

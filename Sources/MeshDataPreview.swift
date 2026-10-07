@@ -9,6 +9,7 @@ extension MeshData {
     func makeGeometry() -> SCNGeometry {
         var normals = [SIMD3<Float>](repeating: .zero, count: vertices.count)
         for t in 0..<triangleCount {
+            if t.isMultiple(of: 1024), Task.isCancelled { return SCNGeometry() }
             let i = (Int(indices[t * 3]), Int(indices[t * 3 + 1]), Int(indices[t * 3 + 2]))
             // Un-normalised, so each face contributes in proportion to its area.
             let n = simd_cross(vertices[i.1] - vertices[i.0], vertices[i.2] - vertices[i.0])

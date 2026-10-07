@@ -5,7 +5,7 @@ import simd
 final class SmallComponentTests: XCTestCase {
     func testDropsTinyDisconnectedFragmentButKeepsMainObject() throws {
         let main = Solids.box(SIMD3(-10, -10, 0), SIMD3(10, 10, 20))
-        let speck = Solids.box(SIMD3(30, 30, 0), SIMD3(32, 32, 2))
+        let speck = Solids.box(SIMD3(30, 30, 0), SIMD3(31, 31, 1))
         let offset = UInt32(main.vertices.count)
         let mesh = MeshData.seated(
             vertices: main.vertices + speck.vertices,

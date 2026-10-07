@@ -123,6 +123,21 @@ xcodebuild -project LidarScan3D.xcodeproj -scheme LidarScan3D \
 
 ## Using it
 
+Preparation is saved with each scan: reopening restores orientation, calibration,
+cleanup, smoothing and the base cut. *Reset all preparation* starts again from
+the original model. *Compare with original scan* changes only the preview.
+You can rename scans, inspect their storage usage, and remove source photographs
+after reconstruction while retaining the model and exports.
+
+Interrupted captures and reconstructions appear under *Interrupted scans*. Photos
+are retained until you explicitly delete them; retry reconstruction when at least
+20 saved photos exist. Building from a live capture also requires at least 20
+photos; 60 or more varied views usually gives better detail.
+
+For a printer outside the presets, choose *Other printer* and enter width, depth
+and height. Invalid calibration or an unsupported scale is reported rather than
+silently changing the requested size.
+
 **Scan.** Tap *New Scan*, put the white dot in the middle of the screen on the object
 and tap *Continue*: Object Capture places its box around whatever is under the dot.
 If the box lands on the table or a stand instead, aim again and tap *Reset box*. Drag
@@ -146,8 +161,9 @@ faces the grey bed. Enable *Flat base* and move the cut-plane slider until the r
 underside is gone; release it to see the exact capped result. Set the scale, or tap
 *Match real size*, say which side you measured, and enter its length.
 
-**Check.** Under *Ready to print?*, pick your printer. A green *Watertight* and *Fits
-the build plate* mean the file will open in Bambu Studio without a repair prompt. If it
+**Check.** Under *Ready to print?*, pick your printer. *Surface checks passed* means the checked edges, shell volumes and non-neighbour
+triangle intersections passed. *Fits the build plate* checks the chosen printer
+volume. Inspect sliced layers too: these checks do not assess wall thickness or supports. If it
 is too big, *Scale to fit* picks the largest size that fits. Holes in a scan usually
 sit in the underside, so if the check finds any, raise the flat-base trim first.
 
@@ -232,8 +248,13 @@ dependency, the tests compile the app's own source rather than a copy:
 swift test
 ```
 
-The app runs the same checks on every model it shows (`Sources/Geometry/PrintReport.swift`),
-and `tools/check_stl.py` runs them against an exported `.stl` or `.3mf`. CI exports the
+The app additionally checks separate shell orientation and non-neighbour triangle
+intersections with a bounded spatial hierarchy (`Sources/Geometry/PrintReport.swift`).
+An incomplete intersection check is shown as needing review. Negative separate
+shells may represent intended internal cavities and are flagged for inspection.
+Adjacent triangles sharing a welded vertex are excluded from intersection checks.
+
+`tools/check_stl.py` independently checks topology against exported `.stl` or `.3mf` files. CI exports the
 sample in both formats and audits them with it, reading the 3MF with Python's own
 `zipfile` and XML parser rather than the app's code. Both compare vertices by
 position at micron precision. Meshes are also welded that way on load, because Object

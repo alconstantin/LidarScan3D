@@ -3,6 +3,7 @@ import SwiftUI
 struct HomeView: View {
     @Environment(AppModel.self) private var model
     @State private var scans: [ScanFolder] = []
+    @State private var interrupted: [ScanFolder] = []
     @State private var path: [ScanFolder] = []
     @State private var sampleError: String?
     @State private var scanPendingDeletion: ScanFolder?
@@ -35,6 +36,25 @@ struct HomeView: View {
                         Text(reason)
                             .font(.footnote)
                             .foregroundStyle(.red)
+                    }
+                }
+
+                if !interrupted.isEmpty {
+                    Section("Interrupted scans") {
+                        ForEach(interrupted) { scan in
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text(scan.name).font(.headline)
+                                Text("\(scan.imageCount) saved photos").font(.caption).foregroundStyle(.secondary)
+                                if scan.canRetry {
+                                    Button("Retry reconstruction") { model.retryReconstruction(scan) }
+                                } else {
+                                    Text("Too few photos to rebuild. Start a new scan.").font(.footnote)
+                                }
+                            }
+                            .swipeActions {
+                                Button("Delete", role: .destructive) { scanPendingDeletion = scan }
+                            }
+                        }
                     }
                 }
 
@@ -79,6 +99,11 @@ struct HomeView: View {
                 } footer: {
                     Text("The sample is a vase on a foot ring. Turn it, give it a flat base and export it on any iPhone, LiDAR or not.")
                 }
+                Section {
+                    let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "—"
+                    let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "—"
+                    LabeledContent("App version", value: "\(version) (\(build))")
+                }
             }
             .navigationTitle("LiDAR Scan 3D")
             .toolbar { EditButton() }
@@ -95,10 +120,9 @@ struct HomeView: View {
             // on the main thread once a few dozen have piled up. Scans that never
             // produced a model are cleared out on the way.
             .task {
-                scans = await Task.detached {
-                    ScanFolder.removeIncomplete()
-                    return ScanFolder.all()
-                }.value
+                let listing = await Task.detached { (ScanFolder.all(), ScanFolder.incomplete()) }.value
+                scans = listing.0
+                interrupted = listing.1
             }
             .confirmationDialog("Delete this scan?", isPresented: Binding(
                 get: { scanPendingDeletion != nil },
@@ -128,6 +152,7 @@ struct HomeView: View {
             do {
                 try await Task.detached { try scan.delete() }.value
                 scans.removeAll { $0 == scan }
+                interrupted.removeAll { $0 == scan }
                 path.removeAll { $0 == scan }
             } catch {
                 deletionError = "Could not delete \(scan.name): \(error.localizedDescription)"

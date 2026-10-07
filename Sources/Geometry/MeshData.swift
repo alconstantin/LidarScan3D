@@ -4,8 +4,14 @@ import simd
 
 enum MeshError: LocalizedError {
     case noGeometry
+    case invalidGeometry
 
-    var errorDescription: String? { "The model file contains no triangle geometry." }
+    var errorDescription: String? {
+        switch self {
+        case .noGeometry: "The model file contains no usable triangle geometry."
+        case .invalidGeometry: "The model contains invalid coordinates or triangle indices."
+        }
+    }
 }
 
 /// Vertices are matched at micron precision, which is far finer than a printer
@@ -53,6 +59,7 @@ struct MeshData: Sendable {
 
     /// Reads the USDZ produced by Object Capture (Y-up, metres).
     static func load(from url: URL) throws -> MeshData {
+        if url.pathExtension.lowercased() == "obj" { return try loadTriangleOBJ(from: url) }
         let asset = MDLAsset(url: url)
         var vertices: [SIMD3<Float>] = []
         var indices: [UInt32] = []
@@ -84,7 +91,42 @@ struct MeshData: Sendable {
             }
         }
         guard !indices.isEmpty else { throw MeshError.noGeometry }
-        return welded(vertices: vertices, indices: indices)
+        guard vertices.allSatisfy({ $0.x.isFinite && $0.y.isFinite && $0.z.isFinite && simd_abs($0).max() < 2_000_000 }),
+              indices.count.isMultiple(of: 3), indices.allSatisfy({ Int($0) < vertices.count }) else {
+            throw MeshError.invalidGeometry
+        }
+        let result = welded(vertices: vertices, indices: indices)
+        guard result.triangleCount > 0 else { throw MeshError.noGeometry }
+        return result
+    }
+
+    /// The bundled sample is plain triangle OBJ. Read it directly so this path does
+    /// not depend on ModelIO's out-of-process importer or texture services.
+    private static func loadTriangleOBJ(from url: URL) throws -> MeshData {
+        let text = try String(contentsOf: url, encoding: .utf8)
+        var vertices: [SIMD3<Float>] = []
+        var indices: [UInt32] = []
+        for (lineNumber, line) in text.split(whereSeparator: \.isNewline).enumerated() {
+            if lineNumber.isMultiple(of: 1024) { try Task.checkCancellation() }
+            let tokens = line.split(whereSeparator: \.isWhitespace)
+            guard let type = tokens.first else { continue }
+            if type == "v" {
+                guard tokens.count >= 4, let x = Float(tokens[1]), let y = Float(tokens[2]), let z = Float(tokens[3]),
+                      x.isFinite, y.isFinite, z.isFinite, max(abs(x), abs(y), abs(z)) < 2000 else { throw MeshError.invalidGeometry }
+                vertices.append(SIMD3(x, -z, y) * 1000)
+            } else if type == "f" {
+                guard tokens.count == 4 else { throw MeshError.invalidGeometry }
+                for token in tokens.dropFirst() {
+                    guard let value = token.split(separator: "/", omittingEmptySubsequences: false).first.flatMap({ Int($0) }), value != 0 else { throw MeshError.invalidGeometry }
+                    let index = value > 0 ? value - 1 : vertices.count + value
+                    guard index >= 0, index < vertices.count else { throw MeshError.invalidGeometry }
+                    indices.append(UInt32(index))
+                }
+            }
+        }
+        let mesh = welded(vertices: vertices, indices: indices)
+        guard mesh.triangleCount > 0 else { throw MeshError.noGeometry }
+        return mesh
     }
 
     /// Fuses vertices that share a position, then seats the result.
@@ -125,16 +167,27 @@ struct MeshData: Sendable {
     /// Re-centres on X/Y, seats the lowest point on Z = 0 and recomputes the print size.
     /// Everything that moves geometry ends here, so exports always rest on the bed.
     static func seated(vertices: [SIMD3<Float>], indices: [UInt32]) -> MeshData {
-        guard let first = vertices.first else {
-            return MeshData(vertices: [], indices: [], sizeMM: .zero)
+        // Only surface vertices may affect dimensions, calibration or the print bed.
+        guard !indices.isEmpty else { return MeshData(vertices: [], indices: [], sizeMM: .zero) }
+        var used = [Bool](repeating: false, count: vertices.count)
+        for index in indices {
+            guard Int(index) < vertices.count else { return MeshData(vertices: [], indices: [], sizeMM: .zero) }
+            used[Int(index)] = true
         }
-        var lo = first, hi = first
-        for v in vertices {
+        var remap = [UInt32](repeating: 0, count: vertices.count)
+        var compact: [SIMD3<Float>] = []
+        for i in vertices.indices where used[i] {
+            remap[i] = UInt32(compact.count)
+            compact.append(vertices[i])
+        }
+        let mapped = indices.map { remap[Int($0)] }
+        var lo = compact[0], hi = compact[0]
+        for v in compact {
             lo = simd_min(lo, v)
             hi = simd_max(hi, v)
         }
         let offset = SIMD3<Float>(-(lo.x + hi.x) / 2, -(lo.y + hi.y) / 2, -lo.z)
-        return MeshData(vertices: vertices.map { $0 + offset }, indices: indices, sizeMM: hi - lo)
+        return MeshData(vertices: compact.map { $0 + offset }, indices: mapped, sizeMM: hi - lo)
     }
 
     /// The same mesh turned by `rotation` and re-seated on the bed.
@@ -248,7 +301,10 @@ struct MeshData: Sendable {
 
         func root(_ value: Int) -> Int {
             var node = value
-            while parent[node] != node { node = parent[node] }
+            while parent[node] != node {
+                parent[node] = parent[parent[node]]
+                node = parent[node]
+            }
             return node
         }
 
@@ -259,6 +315,7 @@ struct MeshData: Sendable {
         }
 
         for t in 0..<triangleCount {
+            if t.isMultiple(of: 1024), Task.isCancelled { return nil }
             let i = t * 3
             let a = vertices[Int(indices[i])]
             let b = vertices[Int(indices[i + 1])]
@@ -295,6 +352,7 @@ struct MeshData: Sendable {
         var objectLow = SIMD2<Float>(repeating: .infinity)
         var objectHigh = -objectLow
         for t in 0..<triangleCount {
+            if t.isMultiple(of: 1024), Task.isCancelled { return nil }
             let targetIsSupport = parent[t] >= 0 && root(t) == support.key
             let i = t * 3
             for index in indices[i..<(i + 3)] {
@@ -316,6 +374,7 @@ struct MeshData: Sendable {
         kept.reserveCapacity(indices.count)
         var removed = 0
         for t in 0..<triangleCount {
+            if t.isMultiple(of: 1024), Task.isCancelled { return nil }
             if parent[t] >= 0, root(t) == support.key {
                 removed += 1
                 continue
@@ -362,7 +421,10 @@ struct MeshData: Sendable {
 
         func root(_ value: Int) -> Int {
             var node = value
-            while parent[node] != node { node = parent[node] }
+            while parent[node] != node {
+                parent[node] = parent[parent[node]]
+                node = parent[node]
+            }
             return node
         }
 
@@ -373,6 +435,7 @@ struct MeshData: Sendable {
         }
 
         for t in 0..<triangleCount {
+            if t.isMultiple(of: 1024), Task.isCancelled { return nil }
             let i = t * 3
             let a = vertices[Int(indices[i])]
             let b = vertices[Int(indices[i + 1])]
@@ -388,6 +451,7 @@ struct MeshData: Sendable {
 
         var componentArea: [Int: Float] = [:]
         for t in 0..<triangleCount {
+            if t.isMultiple(of: 1024), Task.isCancelled { return nil }
             componentArea[root(t), default: 0] += triangleArea[t]
         }
         guard componentArea.count > 1,
@@ -395,7 +459,7 @@ struct MeshData: Sendable {
 
         // At most half a percent of the main surface, and never discard a component
         // with 25 mm² or more: that is large enough to be intentional on small models.
-        let minimumArea = max(largest * 0.005, 25)
+        let minimumArea = min(largest * 0.005, 25)
         let discarded = Set(componentArea.compactMap { $0.value < minimumArea ? $0.key : nil })
         guard !discarded.isEmpty else { return nil }
 
@@ -403,6 +467,7 @@ struct MeshData: Sendable {
         kept.reserveCapacity(indices.count)
         var removedTriangles = 0
         for t in 0..<triangleCount {
+            if t.isMultiple(of: 1024), Task.isCancelled { return nil }
             if discarded.contains(root(t)) {
                 removedTriangles += 1
             } else {
@@ -480,6 +545,7 @@ struct MeshData: Sendable {
         // Scans run to hundreds of thousands of triangles, so this loop stays free of
         // per-triangle allocations.
         for t in 0..<triangleCount {
+            if t.isMultiple(of: 1024), Task.isCancelled { return self }
             let v0 = vertices[Int(indices[t * 3])]
             let v1 = vertices[Int(indices[t * 3 + 1])]
             let v2 = vertices[Int(indices[t * 3 + 2])]
@@ -539,7 +605,7 @@ struct MeshData: Sendable {
                       let next = candidates.first(where: { !used[$0] }) else { break }
                 current = next
             }
-            if loop.count >= 3 { loops.append(loop) }
+            if loop.count >= 3, PlanarKey(rim[current].to) == PlanarKey(rim[seed].from) { loops.append(loop) }
         }
 
         // The triangulation winds counter-clockwise seen from above. This cap is the
@@ -622,7 +688,7 @@ struct SmallComponentCleanup: Sendable {
 
 /// A deliberately small set of finishing strengths. They smooth reconstruction noise,
 /// not the object's shape; sharp creases and open edges are left alone.
-enum MeshSmoothingLevel: String, CaseIterable, Identifiable, Sendable {
+enum MeshSmoothingLevel: String, CaseIterable, Identifiable, Codable, Sendable {
     case off, light, medium, strong
 
     var id: Self { self }
@@ -673,6 +739,7 @@ extension MeshData {
         edgeFaces.reserveCapacity(indices.count)
 
         for face in 0..<triangleCount {
+            if face.isMultiple(of: 1024), Task.isCancelled { return self }
             let start = face * 3
             let triangle = [indices[start], indices[start + 1], indices[start + 2]]
             guard triangle.allSatisfy({ Int($0) < vertices.count }) else { return self }
@@ -690,6 +757,7 @@ extension MeshData {
 
         var faceNormals = [SIMD3<Float>](repeating: .zero, count: triangleCount)
         for face in 0..<triangleCount {
+            if face.isMultiple(of: 1024), Task.isCancelled { return self }
             let start = face * 3
             let a = vertices[Int(indices[start])]
             let b = vertices[Int(indices[start + 1])]
@@ -725,6 +793,7 @@ extension MeshData {
         func pass(_ input: [SIMD3<Float>], factor: Float) -> [SIMD3<Float>] {
             var output = input
             for i in input.indices where !fixed[i] && !neighbours[i].isEmpty {
+                if i.isMultiple(of: 1024), Task.isCancelled { return input }
                 let average = neighbours[i].reduce(SIMD3<Float>.zero) { $0 + input[$1] } / Float(neighbours[i].count)
                 output[i] += (average - input[i]) * factor
             }
@@ -733,6 +802,7 @@ extension MeshData {
 
         var result = vertices
         for _ in 0..<level.iterations {
+            if Task.isCancelled { return self }
             // The negative pass counters the volume loss of ordinary Laplacian smoothing.
             result = pass(result, factor: 0.28)
             result = pass(result, factor: -0.29)

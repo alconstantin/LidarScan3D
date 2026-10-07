@@ -20,8 +20,8 @@ targets:
       path: Sources/Info.plist
       properties:
         CFBundleDisplayName: LiDAR Scan 3D
-        CFBundleShortVersionString: "1.0"
-        CFBundleVersion: "1"
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
         NSCameraUsageDescription: The camera and LiDAR sensor are used to scan objects into 3D models.
         UILaunchScreen: {}
         UIRequiredDeviceCapabilities: [arkit]
@@ -40,6 +40,8 @@ targets:
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         TARGETED_DEVICE_FAMILY: "1"
         SWIFT_VERSION: "5.0"
+        MARKETING_VERSION: "1.1"
+        CURRENT_PROJECT_VERSION: "2"
 
 schemes:
   LidarScan3D:

@@ -1,6 +1,7 @@
 import SwiftUI
 import UIKit
 import RealityKit
+import AVFoundation
 
 /// Drives the scan flow: capture (LiDAR-guided photos) -> on-device reconstruction -> result.
 @MainActor
@@ -22,7 +23,10 @@ final class AppModel {
 
     @ObservationIgnored private var currentScan: ScanFolder?
     @ObservationIgnored private var userCancelledCapture = false
-    @ObservationIgnored private let reconstruction = SessionBox()
+    @ObservationIgnored private var reconstruction = CancellationGate()
+    var isCancelling = false
+    var captureMessage: String?
+    @ObservationIgnored private var isStartingCapture = false
     /// Holds the capture session for as long as it runs, so it has to be stopped by hand.
     @ObservationIgnored private var feedbackTask: Task<Void, Never>?
 
@@ -47,6 +51,23 @@ final class AppModel {
     // MARK: Capture
 
     func startNewScan() {
+        guard !isStartingCapture else { return }
+        isStartingCapture = true
+        Task {
+            defer { isStartingCapture = false }
+            let status = AVCaptureDevice.authorizationStatus(for: .video)
+            let allowed: Bool
+            if status == .notDetermined { allowed = await AVCaptureDevice.requestAccess(for: .video) }
+            else { allowed = status == .authorized }
+            guard allowed else {
+                phase = .failed("Camera access is required. Open Settings → LiDAR Scan 3D and enable Camera, then try again.")
+                return
+            }
+            beginNewScan()
+        }
+    }
+
+    private func beginNewScan() {
         DeviceCapability.log()
         if let unsupportedReason = Self.unsupportedReason {
             phase = .failed(unsupportedReason)
@@ -57,6 +78,7 @@ final class AppModel {
             currentScan = scan
             userCancelledCapture = false
             captureQuality = ScanQuality()
+            captureMessage = nil
 
             var configuration = ObjectCaptureSession.Configuration()
             configuration.checkpointDirectory = scan.checkpointsURL
@@ -86,6 +108,11 @@ final class AppModel {
     /// Save the observations before `finish()` tears down the capture session. The
     /// count is guidance, not a score: a long scan naturally takes many photos.
     func finishCapture(_ session: ObjectCaptureSession, passCount: Int) {
+        guard session.numberOfShotsTaken >= CaptureProgress.minimumPhotos else {
+            captureMessage = "Capture at least \(CaptureProgress.minimumPhotos) photos from different angles before building a model."
+            return
+        }
+        captureMessage = nil
         captureQuality.shotCount = max(captureQuality.shotCount, session.numberOfShotsTaken)
         captureQuality.passCount = max(captureQuality.passCount, passCount)
         currentScan?.saveQuality(captureQuality)
@@ -104,7 +131,10 @@ final class AppModel {
                     // finished session stops sending feedback, so that loop would otherwise
                     // wait forever with the session in hand.
                     self.stopObservingFeedback()
-                    self.startReconstruction()
+                    if self.userCancelledCapture {
+                        self.discardCurrentScan()
+                        self.phase = .home
+                    } else { self.startReconstruction() }
                     return
                 case .failed(let error):
                     captureLog.error("capture failed: \(String(describing: error), privacy: .public)")
@@ -171,7 +201,19 @@ final class AppModel {
     // MARK: Reconstruction
 
     func cancelReconstruction() {
+        isCancelling = true
+        progressStatus = "Cancelling…"
         reconstruction.cancel()
+    }
+
+    func retryReconstruction(_ scan: ScanFolder) {
+        guard case .home = phase else { return }
+        guard scan.canRetry else {
+            phase = .failed("This scan has too few saved photos to rebuild. Start a new scan, or delete it from Interrupted scans.")
+            return
+        }
+        currentScan = scan
+        startReconstruction()
     }
 
     private func startReconstruction() {
@@ -179,6 +221,9 @@ final class AppModel {
             phase = .home
             return
         }
+        reconstruction = CancellationGate()
+        let gate = reconstruction
+        isCancelling = false
         phase = .reconstructing
         progress = 0
         progressStatus = "Preparing…"
@@ -187,9 +232,10 @@ final class AppModel {
         Task {
             defer {
                 UIApplication.shared.isIdleTimerDisabled = false
-                reconstruction.clear()
+                gate.clear()
+                isCancelling = false
             }
-            await reconstruct(scan)
+            await reconstruct(scan, gate: gate)
         }
     }
 
@@ -199,13 +245,15 @@ final class AppModel {
     ///
     /// `nonisolated` is what moves it: a nonisolated async function runs on the
     /// cooperative pool rather than inheriting the caller's actor.
-    private nonisolated func reconstruct(_ scan: ScanFolder) async {
+    private nonisolated func reconstruct(_ scan: ScanFolder, gate: CancellationGate) async {
         do {
             var configuration = PhotogrammetrySession.Configuration()
             configuration.checkpointDirectory = scan.checkpointsURL
             let session = try PhotogrammetrySession(input: scan.imagesURL, configuration: configuration)
-            reconstruction.adopt(session)
-            try session.process(requests: [.modelFile(url: scan.modelURL)])
+            gate.attach { session.cancel() }
+            guard !gate.isCancelled else { await finishCancelled(); return }
+            try? FileManager.default.removeItem(at: scan.reconstructionURL)
+            try session.process(requests: [.modelFile(url: scan.reconstructionURL)])
 
             // The session itself never leaves this function; only Sendable outputs do.
             for try await output in session.outputs {
@@ -218,6 +266,9 @@ final class AppModel {
                     await finishCancelled()
                     return
                 case .processingComplete:
+                    if gate.isCancelled { await finishCancelled(); return }
+                    guard FileManager.default.fileExists(atPath: scan.reconstructionURL.path) else { throw MeshError.noGeometry }
+                    try FileManager.default.moveItem(at: scan.reconstructionURL, to: scan.modelURL)
                     await finish(with: scan)
                     return
                 default:
@@ -228,12 +279,14 @@ final class AppModel {
             // but if it does the reconstruction screen would wait on it forever.
             await fail("Reconstruction stopped without producing a model.")
         } catch {
-            await fail("Reconstruction failed: \(error.localizedDescription)")
+            if gate.isCancelled { await finishCancelled() }
+            else { await fail("Reconstruction failed: \(error.localizedDescription). Your photos are saved; retry from Interrupted scans.") }
         }
     }
 
     private func report(progress fraction: Double) {
-        progress = fraction
+        guard !isCancelling else { return }
+        progress = min(max(fraction, 0), 1)
         progressStatus = "Building 3D model…"
     }
 
@@ -246,39 +299,18 @@ final class AppModel {
     }
 
     private func finishCancelled() {
-        discardCurrentScan()
+        if let currentScan { try? FileManager.default.removeItem(at: currentScan.reconstructionURL) }
+        currentScan = nil
         phase = .home
     }
 
     private func fail(_ message: String) {
-        // Nothing in the app can pick a scan up again without its model, and its photos
-        // would sit invisibly in Documents taking up hundreds of megabytes.
-        discardCurrentScan()
+        currentScan = nil
         phase = .failed(message)
     }
 
     private func discardCurrentScan() {
         if let currentScan { try? currentScan.delete() }
         currentScan = nil
-    }
-}
-
-/// Lets the main actor cancel a reconstruction that is running off it.
-/// PhotogrammetrySession is not Sendable, so the reference is kept behind a lock and
-/// never handed out — `cancel()` is the only thing reachable from another thread.
-private final class SessionBox: @unchecked Sendable {
-    private let lock = NSLock()
-    private var session: PhotogrammetrySession?
-
-    func adopt(_ session: PhotogrammetrySession) {
-        lock.withLock { self.session = session }
-    }
-
-    func cancel() {
-        lock.withLock { session?.cancel() }
-    }
-
-    func clear() {
-        lock.withLock { session = nil }
     }
 }

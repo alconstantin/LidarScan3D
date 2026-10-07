@@ -9,13 +9,10 @@ struct CaptureView: View {
     @State private var isFlipping = false
     /// A complete slow circle at a new height is a meaningful unit of coverage. The
     /// count is preserved with the scan so the result can explain its confidence.
-    @State private var scanPasses = 0
-    /// Apple's coverage dial can stop animating while it evaluates the scene. Keep an
-    /// independent, objective measure of whether the capture is still receiving photos.
-    @State private var lastShotCount = 0
-    @State private var lastPhotoAt = Date.now
+    @State private var captureProgressState = CaptureProgress()
     @State private var captureStatusUpdatedAt = Date.now
     @State private var isCaptureStalled = false
+    private var scanPasses: Int { captureProgressState.passes }
 
     var body: some View {
         ZStack {
@@ -50,6 +47,7 @@ struct CaptureView: View {
                     captureProgress
                 }
 
+                if let message = model.captureMessage { hint(message) }
                 controls
             }
             .padding()
@@ -74,7 +72,7 @@ struct CaptureView: View {
                 Button("Reset box") { _ = session.resetDetection() }
                     .buttonStyle(.bordered)
                 Button("Start capture") {
-                    scanPasses = 1
+                    captureProgressState.start(at: .now)
                     resetCaptureWatchdog()
                     model.startCapturing(session)
                 }
@@ -111,6 +109,7 @@ struct CaptureView: View {
                         .buttonStyle(.bordered)
                     Button("Finish & build model") { model.finishCapture(session, passCount: max(scanPasses, 1)) }
                         .buttonStyle(.borderedProminent)
+                        .disabled(session.numberOfShotsTaken < CaptureProgress.minimumPhotos)
                 }
                 .padding()
                 .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16))
@@ -132,6 +131,11 @@ struct CaptureView: View {
                     }
                     Button("Finish early") { model.finishCapture(session, passCount: max(scanPasses, 1)) }
                         .buttonStyle(.bordered)
+                        .disabled(session.numberOfShotsTaken < CaptureProgress.minimumPhotos)
+                    if session.numberOfShotsTaken < CaptureProgress.minimumPhotos {
+                        Text("Capture at least \(CaptureProgress.minimumPhotos) photos; 60 or more from varied angles usually gives better detail.")
+                            .font(.footnote).multilineTextAlignment(.center)
+                    }
                 }
             }
 
@@ -183,7 +187,7 @@ struct CaptureView: View {
         }
         captureLog.notice("begin new pass")
         session.beginNewScanPass()
-        scanPasses += 1
+        captureProgressState.newPass(at: .now)
         resetCaptureWatchdog()
     }
 
@@ -205,7 +209,7 @@ struct CaptureView: View {
         }
         isFlipping = false
         session.beginNewScanPassAfterFlip()
-        scanPasses += 1
+        captureProgressState.newPass(at: .now)
         // The flip sends the session back to `.ready` for a new box. Apple's sample
         // resumes once its flip sheet closes; without it detection would stay paused.
         if session.isPaused { session.resume() }
@@ -230,6 +234,7 @@ struct CaptureView: View {
         if feedback.contains(.movingTooFast) { return "Slow down" }
         if feedback.contains(.environmentTooDark) { return "Too dark: add more light" }
         if feedback.contains(.environmentLowLight) { return "Low light: more light helps" }
+        if #available(iOS 17.4, *), feedback.contains(.objectNotDetected) { return "Object not detected: adjust the capture box and try a clearer angle" }
         if feedback.contains(.outOfFieldOfView) { return "Keep the object in view" }
         return nil
     }
@@ -246,7 +251,9 @@ struct CaptureView: View {
                 .multilineTextAlignment(.center)
                 .foregroundStyle(.secondary)
             if isCaptureStalled {
-                Label("No new photo for \(lastPhotoAge) seconds. Move to a fresh angle; if the count stays still, Finish early safely builds from the photos already saved.", systemImage: "pause.circle")
+                Label(session.numberOfShotsTaken == 0
+                      ? "No photos captured yet. Add light, check the box and distance, and move slowly to a new angle. Cancel and try again if capture does not start."
+                      : "No new photo for \(lastPhotoAge) seconds. Move to a fresh angle. Finish early is available after \(CaptureProgress.minimumPhotos) photos.", systemImage: "pause.circle")
                     .font(.footnote)
                     .multilineTextAlignment(.center)
                     .foregroundStyle(.orange)
@@ -263,7 +270,7 @@ struct CaptureView: View {
     }
 
     private var lastPhotoAge: Int {
-        max(0, Int(captureStatusUpdatedAt.timeIntervalSince(lastPhotoAt)))
+        max(0, Int(captureStatusUpdatedAt.timeIntervalSince(captureProgressState.lastPhotoAt)))
     }
 
     private var captureActivityText: String {
@@ -272,14 +279,11 @@ struct CaptureView: View {
     }
 
     private func resetCaptureWatchdog() {
-        lastShotCount = session.numberOfShotsTaken
-        lastPhotoAt = .now
+        captureProgressState.update(shots: session.numberOfShotsTaken, at: .now, paused: true)
         captureStatusUpdatedAt = .now
         isCaptureStalled = false
     }
 
-    /// ObjectCaptureView owns the dial, so it gives no usable "stalled" callback.
-    /// Sampling its public shot count gives the person scanning an honest status instead.
     @MainActor
     private func monitorCaptureProgress() async {
         resetCaptureWatchdog()
@@ -287,24 +291,9 @@ struct CaptureView: View {
             try? await Task.sleep(for: .seconds(2))
             guard !Task.isCancelled else { return }
             captureStatusUpdatedAt = .now
-
-            guard isCapturing else {
-                isCaptureStalled = false
-                continue
-            }
-
-            let shots = session.numberOfShotsTaken
-            if shots > lastShotCount {
-                lastShotCount = shots
-                lastPhotoAt = .now
-                if isCaptureStalled {
-                    captureLog.notice("capture resumed, shots=\(shots, privacy: .public)")
-                }
-                isCaptureStalled = false
-            } else if shots > 0, lastPhotoAge >= 15, !isCaptureStalled {
-                isCaptureStalled = true
-                captureLog.notice("capture progress paused, shots=\(shots, privacy: .public) idleSeconds=\(lastPhotoAge, privacy: .public)")
-            }
+            let paused = !isCapturing || session.isPaused || isFlipping || session.userCompletedScanPass
+            captureProgressState.update(shots: session.numberOfShotsTaken, at: .now, paused: paused)
+            isCaptureStalled = !paused && captureProgressState.isStalled(at: .now)
         }
     }
 

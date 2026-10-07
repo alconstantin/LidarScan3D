@@ -83,7 +83,30 @@ struct ScanFolder: Identifiable, Hashable, Sendable {
     let url: URL
 
     var id: URL { url }
-    var name: String { url.lastPathComponent }
+    var name: String {
+        guard let data = try? Data(contentsOf: url.appendingPathComponent("name.json")),
+              let value = try? JSONDecoder().decode(String.self, from: data), !value.isEmpty else { return url.lastPathComponent }
+        return value
+    }
+    var exportName: String { name.replacingOccurrences(of: "/", with: "-").replacingOccurrences(of: ":", with: "-") }
+    func rename(_ name: String) throws {
+        let value = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !value.isEmpty, value.count <= 80 else { throw CocoaError(.fileWriteInvalidFileName) }
+        try JSONEncoder().encode(value).write(to: url.appendingPathComponent("name.json"), options: .atomic)
+    }
+    var storageBytes: Int64 {
+        let keys: [URLResourceKey] = [.isRegularFileKey, .fileSizeKey]
+        guard let files = FileManager.default.enumerator(at: url, includingPropertiesForKeys: keys) else { return 0 }
+        var total: Int64 = 0
+        for case let file as URL in files {
+            if let values = try? file.resourceValues(forKeys: Set(keys)), values.isRegularFile == true { total += Int64(values.fileSize ?? 0) }
+        }
+        return total
+    }
+    func deleteSourcePhotos() throws {
+        guard hasModel else { throw CocoaError(.fileNoSuchFile) }
+        if FileManager.default.fileExists(atPath: imagesURL.path) { try FileManager.default.removeItem(at: imagesURL) }
+    }
     var imagesURL: URL { url.appendingPathComponent("Images", isDirectory: true) }
     var checkpointsURL: URL { url.appendingPathComponent("Checkpoints", isDirectory: true) }
     var exportsURL: URL { url.appendingPathComponent("Exports", isDirectory: true) }
@@ -98,9 +121,16 @@ struct ScanFolder: Identifiable, Hashable, Sendable {
         return usdz
     }
     var hasModel: Bool { FileManager.default.fileExists(atPath: modelURL.path) }
+    var preparationURL: URL { url.appendingPathComponent("preparation.json") }
+    var reconstructionURL: URL { url.appendingPathComponent("reconstruction.usdz") }
+    var imageCount: Int {
+        let files = (try? FileManager.default.contentsOfDirectory(at: imagesURL, includingPropertiesForKeys: nil)) ?? []
+        return files.filter { ["heic", "jpg", "jpeg", "png"].contains($0.pathExtension.lowercased()) }.count
+    }
+    var canRetry: Bool { !hasModel && imageCount >= CaptureProgress.minimumPhotos }
     /// Only a real scan carries photographs of the object to share for viewing and AR.
     var isTextured: Bool { modelURL.pathExtension == "usdz" }
-    var isSample: Bool { name == Self.sampleName }
+    var isSample: Bool { url.lastPathComponent == Self.sampleName }
 
     /// Older scans predate this file; they remain fully usable, just without capture notes.
     var quality: ScanQuality? {
@@ -116,8 +146,9 @@ struct ScanFolder: Identifiable, Hashable, Sendable {
 
     static func create() throws -> ScanFolder {
         let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.dateFormat = "yyyy-MM-dd HH.mm.ss"
-        let folder = ScanFolder(url: rootURL.appendingPathComponent("Scan \(formatter.string(from: Date()))", isDirectory: true))
+        let folder = ScanFolder(url: rootURL.appendingPathComponent("Scan \(formatter.string(from: Date())) \(UUID().uuidString.prefix(6))", isDirectory: true))
         for directory in [folder.imagesURL, folder.checkpointsURL, folder.exportsURL] {
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         }
@@ -148,20 +179,11 @@ struct ScanFolder: Identifiable, Hashable, Sendable {
         return folder
     }
 
-    /// Scans that never got a model: capture failed, reconstruction failed, or the app
-    /// was killed part way. The app cannot resume them and does not list them, so their
-    /// photos would otherwise fill the device unseen.
-    ///
-    /// Anything created in the last minute is left alone: a scan started the moment the
-    /// home screen appeared has no model yet either, and must not be swept from under it.
-    static func removeIncomplete() {
-        let cutoff = Date().addingTimeInterval(-60)
-        let urls = (try? FileManager.default.contentsOfDirectory(at: rootURL, includingPropertiesForKeys: [.creationDateKey])) ?? []
-        for scan in urls.map(ScanFolder.init(url:)) where !scan.hasModel {
-            guard let created = try? scan.url.resourceValues(forKeys: [.creationDateKey]).creationDate,
-                  created < cutoff else { continue }
-            try? scan.delete()
-        }
+    /// Interrupted work stays visible until the user retries or explicitly deletes it.
+    static func incomplete() -> [ScanFolder] {
+        let urls = (try? FileManager.default.contentsOfDirectory(at: rootURL, includingPropertiesForKeys: [.isDirectoryKey])) ?? []
+        return urls.filter { (try? $0.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true }
+            .map(ScanFolder.init(url:)).filter { !$0.hasModel }.sorted { $0.name > $1.name }
     }
 
     /// Permanently removes the scan's enclosing folder. That folder owns every piece

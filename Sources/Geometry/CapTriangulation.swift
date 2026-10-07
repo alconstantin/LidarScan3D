@@ -192,6 +192,7 @@ enum CapTriangulation {
         // triangle to keep the cap closed.
         var allowingFlat = false
         while remaining > 3 {
+            if Task.isCancelled { return }
             if isEar(i, allowingFlat: allowingFlat) {
                 triangles.append((polygon[prev[i]], polygon[i], polygon[next[i]]))
                 next[prev[i]] = next[i]
