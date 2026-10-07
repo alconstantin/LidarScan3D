@@ -4,6 +4,7 @@ struct HomeView: View {
     @Environment(AppModel.self) private var model
     @State private var scans: [ScanFolder] = []
     @State private var interrupted: [ScanFolder] = []
+    @State private var photoCounts: [URL: Int] = [:]
     @State private var path: [ScanFolder] = []
     @State private var sampleError: String?
     @State private var scanPendingDeletion: ScanFolder?
@@ -44,8 +45,8 @@ struct HomeView: View {
                         ForEach(interrupted) { scan in
                             VStack(alignment: .leading, spacing: 8) {
                                 Text(scan.name).font(.headline)
-                                Text("\(scan.imageCount) saved photos").font(.caption).foregroundStyle(.secondary)
-                                if scan.canRetry {
+                                Text("\(photoCounts[scan.id, default: 0]) saved photos").font(.caption).foregroundStyle(.secondary)
+                                if photoCounts[scan.id, default: 0] >= CaptureProgress.minimumPhotos {
                                     Button("Retry reconstruction") { model.retryReconstruction(scan) }
                                 } else {
                                     Text("Too few photos to rebuild. Start a new scan.").font(.footnote)
@@ -71,7 +72,7 @@ struct HomeView: View {
                         Text("No scans yet").foregroundStyle(.secondary)
                     }
                     ForEach(scans) { scan in
-                        NavigationLink(scan.name, value: scan)
+                        NavigationLink(value: scan) { ScanRow(scan: scan) }
                             .swipeActions {
                                 Button(role: .destructive) {
                                     scanPendingDeletion = scan
@@ -117,12 +118,15 @@ struct HomeView: View {
                 }
             }
             // Listing the folder stats every scan on disk, which does not belong
-            // on the main thread once a few dozen have piled up. Scans that never
-            // produced a model are cleared out on the way.
+            // on the main thread once a few dozen have piled up.
             .task {
-                let listing = await Task.detached { (ScanFolder.all(), ScanFolder.incomplete()) }.value
+                let listing = await Task.detached {
+                    let finished = ScanFolder.all(), interrupted = ScanFolder.incomplete()
+                    return (finished, interrupted, Dictionary(uniqueKeysWithValues: interrupted.map { ($0.id, $0.imageCount) }))
+                }.value
                 scans = listing.0
                 interrupted = listing.1
+                photoCounts = listing.2
             }
             .confirmationDialog("Delete this scan?", isPresented: Binding(
                 get: { scanPendingDeletion != nil },

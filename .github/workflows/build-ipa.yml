@@ -43,6 +43,12 @@ jobs:
 
       - name: Build (unsigned)
         run: |
+          version_args=()
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            release_version="${GITHUB_REF_NAME#v}"
+            [[ "$release_version" =~ ^[0-9]+\.[0-9]+(\.[0-9]+)?$ ]] || { echo "::error::Version tags must look like v1.2 or v1.2.3"; exit 1; }
+            version_args+=("MARKETING_VERSION=$release_version")
+          fi
           xcodebuild \
             -project LidarScan3D.xcodeproj \
             -scheme LidarScan3D \
@@ -52,6 +58,7 @@ jobs:
             -derivedDataPath build \
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
             CURRENT_PROJECT_VERSION="$GITHUB_RUN_NUMBER" \
+            "${version_args[@]}" \
             build
 
       # App Review rejects a build without these, and a wiring mistake in project.yml

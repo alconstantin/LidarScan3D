@@ -126,6 +126,15 @@ xcodebuild -project LidarScan3D.xcodeproj -scheme LidarScan3D \
 Preparation is saved with each scan: reopening restores orientation, calibration,
 cleanup, smoothing and the base cut. *Reset all preparation* starts again from
 the original model. *Compare with original scan* changes only the preview.
+Use *Highlight surface problems* to locate the warnings: orange lines mark hole
+or inconsistent edges, red faces mark intersections or inward shells. Highlights
+show through the model and are limited on very damaged scans. Generated previews
+also show X, Y and Z markers matching the dimension labels. These visual aids do
+not alter exported geometry.
+
+The scan list shows cached model thumbnails after a scan has been opened, with a
+capture-photo fallback for scans that have not yet been previewed.
+
 You can rename scans, inspect their storage usage, and remove source photographs
 after reconstruction while retaining the model and exports.
 

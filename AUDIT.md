@@ -213,3 +213,29 @@ Remaining validation and improvements:
   valid internal cavities and are deliberately shown for review rather than repaired.
 - Thumbnails, selected-face issue overlays, wall thickness analysis, automatic mesh
   repair and full VoiceOver/Dynamic Type device validation remain future work.
+
+
+## Follow-up improvements — preview inspection and browsing
+
+Implemented after commit `473068a`:
+- Added lightweight scan-list thumbnails using a cached 256 px rendered model image
+  or a downsampled source photograph. Browsing does not load full 3D models.
+- Reports retain bounded examples of problem edges and triangles in the exact
+  prepared mesh. An optional overlay marks holes/inconsistent edges in orange and
+  intersections/inward shells in red, including occluded problems. Generated
+  previews include X/Y/Z markers. Overlays do not change exported geometry.
+- Interrupted photo counts are loaded off the main thread rather than repeatedly
+  reading storage during view rendering. Scan titles refresh when returning from
+  a rename. Export completion refreshes storage without presenting a share sheet
+  after leaving the result screen.
+- Preparation workers reject malformed recipes before rotation and preserve their
+  prior cache. Thumbnail scenes are privately constructed so offscreen rendering
+  never shares a mutable scene with the interactive preview.
+- Local app version is now 1.2 (3).
+
+Validation: 65 tests pass, including 7 new inspection regressions covering actual
+vertex references, flipped edges, texture seams, intersections, inward shells and
+invalid recipe rejection. Unsigned iPhoneOS Release build and independent sample
+STL/3MF export topology checks pass. Thumbnail rendering, overlay readability,
+axis labels and accessibility still require visual verification on an iPhone;
+these changes have not been installed on hardware or pushed to GitHub.

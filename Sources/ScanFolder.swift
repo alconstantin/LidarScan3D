@@ -121,6 +121,7 @@ struct ScanFolder: Identifiable, Hashable, Sendable {
         return usdz
     }
     var hasModel: Bool { FileManager.default.fileExists(atPath: modelURL.path) }
+    var thumbnailURL: URL { url.appendingPathComponent("thumbnail.jpg") }
     var preparationURL: URL { url.appendingPathComponent("preparation.json") }
     var reconstructionURL: URL { url.appendingPathComponent("reconstruction.usdz") }
     var imageCount: Int {

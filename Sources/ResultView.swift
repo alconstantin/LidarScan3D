@@ -48,6 +48,9 @@ struct ResultView: View {
     @State private var preparationLoaded = false
     @State private var preparationError: String?
     @State private var compareOriginal = false
+    @State private var showSurfaceProblems = false
+    @State private var publishedReport: PrintReport?
+    @State private var isVisible = false
     @State private var showingReset = false
     @State private var showingRename = false
     @State private var renameText = ""
@@ -134,7 +137,7 @@ struct ResultView: View {
 
     /// Falls back rather than blanking: an empty preview reads as a hang.
     private var previewScene: SCNScene? {
-        compareOriginal ? texturedScene : (showsGeneratedPreview ? (generatedScene ?? texturedScene) : texturedScene)
+        compareOriginal ? texturedScene : (showsGeneratedPreview || showSurfaceProblems ? (generatedScene ?? texturedScene) : texturedScene)
     }
 
     private var trimMM: Float {
@@ -165,6 +168,16 @@ struct ResultView: View {
             if let activeMesh {
                 Section {
                     Toggle("Compare with original scan", isOn: $compareOriginal)
+                    Toggle("Highlight surface problems", isOn: $showSurfaceProblems)
+                        .disabled(compareOriginal || isPreparing)
+                    if showSurfaceProblems, !compareOriginal {
+                        Text("Orange lines: holes or inconsistent edges. Red faces: intersections or inward shells. Highlights show through the surface so hidden problems remain visible.")
+                            .font(.footnote).foregroundStyle(.secondary)
+                        if publishedReport?.highlightsTruncated == true {
+                            Text("Showing a limited selection of problems. Read the surface report for the full check status.")
+                                .font(.footnote).foregroundStyle(.orange)
+                        }
+                    }
                     Text("X: width · Y: depth · Z: height. Exports use the prepared model.")
                         .font(.caption).foregroundStyle(.secondary)
                     Button("Reset all preparation", role: .destructive) { showingReset = true }
@@ -423,9 +436,14 @@ struct ResultView: View {
                 .disabled(isExporting || isDeleting || isDeletingPhotos)
             }
         }
-        .task { await load() }
+        .task { isVisible = true; await load() }
+        .onChange(of: showSurfaceProblems) { _, _ in
+            if generatedScene == nil { rebuild() }
+            else { updateProblemVisibility() }
+        }
         .onChange(of: scalePercent) { _, _ in savePreparation() }
         .onDisappear {
+            isVisible = false
             rebuildTask?.cancel()
             rebuildGeneration += 1
             isPreparing = false
@@ -578,7 +596,7 @@ struct ResultView: View {
             do { restore(try Preparation.load(from: scan.preparationURL)) }
             catch { preparationError = "Saved preparation could not be read. Reset preparation to replace it, or preserve the file for recovery." }
             preparationLoaded = preparationError == nil
-            if showsGeneratedPreview { rebuild() }
+            rebuild()
         } catch is CancellationError {
             return
         } catch {
@@ -628,7 +646,7 @@ struct ResultView: View {
                 try await Task.sleep(for: .milliseconds(150))
                 let result = try await worker.prepare(recipe)
                 try Task.checkCancellation()
-                let sceneTask = Task.detached { Self.makeScene(for: result.mesh) }
+                let sceneTask = Task.detached { Self.makeScene(for: result.mesh, report: result.report) }
                 let scene = await withTaskCancellationHandler {
                     await sceneTask.value
                 } onCancel: { sceneTask.cancel() }
@@ -643,6 +661,8 @@ struct ResultView: View {
                 removedFragmentTriangles = result.fragments?.removedTriangles ?? 0
                 removedFragments = result.fragments?.removedComponents ?? 0
                 generatedScene = scene
+                publishedReport = result.report
+                updateProblemVisibility()
                 // One report describes the final published mesh, whichever stage won.
                 loadedReport = result.report
                 supportReport = result.report
@@ -650,6 +670,21 @@ struct ResultView: View {
                 smoothingReport = result.report
                 cutReport = result.report
                 isPreparing = false
+                if !FileManager.default.fileExists(atPath: scan.thumbnailURL.path) {
+                    let thumbnailURL = scan.thumbnailURL
+                    let thumbnailTask = Task.detached {
+                        guard !Task.isCancelled else { return }
+                        let renderer = SCNRenderer(device: nil, options: nil)
+                        let thumbnailScene = Self.makeScene(for: result.mesh, report: PrintReport())
+                        renderer.scene = thumbnailScene
+                        renderer.pointOfView = thumbnailScene.rootNode.childNodes.first(where: { $0.camera != nil })
+                        renderer.autoenablesDefaultLighting = true
+                        let image = renderer.snapshot(atTime: 0, with: CGSize(width: 256, height: 256), antialiasingMode: .multisampling4X)
+                        guard !Task.isCancelled, let data = image.jpegData(compressionQuality: 0.8) else { return }
+                        try? data.write(to: thumbnailURL, options: .atomic)
+                    }
+                    await withTaskCancellationHandler { await thumbnailTask.value } onCancel: { thumbnailTask.cancel() }
+                }
             } catch is CancellationError {
                 if generation == rebuildGeneration { isPreparing = false }
             } catch {
@@ -661,7 +696,13 @@ struct ResultView: View {
         }
     }
 
-    private nonisolated static func makeScene(for mesh: MeshData) -> SCNScene {
+    private func updateProblemVisibility() {
+        generatedScene?.rootNode.enumerateChildNodes { node, _ in
+            if node.name == "surfaceProblems" { node.isHidden = !showSurfaceProblems }
+        }
+    }
+
+    private nonisolated static func makeScene(for mesh: MeshData, report: PrintReport) -> SCNScene {
         let scene = SCNScene()
         scene.background.contents = UIColor.secondarySystemBackground
 
@@ -671,6 +712,12 @@ struct ResultView: View {
         node.eulerAngles.x = -.pi / 2
         node.position = SCNVector3(0, -mesh.sizeMM.z / 2, 0)
         scene.rootNode.addChildNode(node)
+        for problem in mesh.problemNodes(report: report) {
+            problem.eulerAngles = node.eulerAngles
+            problem.position = node.position
+            problem.isHidden = true
+            scene.rootNode.addChildNode(problem)
+        }
 
         // Something to judge the base against by eye, which beats guessing at the lean
         // from a plane fit through a surface that is rough by definition.
@@ -682,6 +729,28 @@ struct ResultView: View {
         bedNode.eulerAngles.x = -.pi / 2
         bedNode.position = SCNVector3(0, -mesh.sizeMM.z / 2, 0)
         scene.rootNode.addChildNode(bedNode)
+
+        // Axis markers match the dimensions and stay part of the generated preview.
+        let markerLength = max(mesh.sizeMM.max() * 0.2, 2)
+        let origin = SIMD3<Float>(-mesh.sizeMM.x / 2, -mesh.sizeMM.z / 2, mesh.sizeMM.y / 2)
+        for (title, delta, color) in [("X", SIMD3<Float>(markerLength, 0, 0), UIColor.systemRed),
+                                      ("Y", SIMD3<Float>(0, 0, -markerLength), UIColor.systemGreen),
+                                      ("Z", SIMD3<Float>(0, markerLength, 0), UIColor.systemBlue)] {
+            let end = origin + delta
+            let geometry = SCNGeometry(sources: [SCNGeometrySource(vertices: [SCNVector3(origin), SCNVector3(end)])],
+                                       elements: [SCNGeometryElement(indices: [UInt32(0), 1], primitiveType: .line)])
+            geometry.firstMaterial?.diffuse.contents = color
+            geometry.firstMaterial?.lightingModel = .constant
+            scene.rootNode.addChildNode(SCNNode(geometry: geometry))
+            let text = SCNText(string: title, extrusionDepth: 0)
+            text.font = UIFont.systemFont(ofSize: 1, weight: .bold)
+            text.firstMaterial?.diffuse.contents = color
+            let label = SCNNode(geometry: text)
+            label.position = SCNVector3(end)
+            label.scale = SCNVector3(markerLength * 0.22, markerLength * 0.22, markerLength * 0.22)
+            label.constraints = [SCNBillboardConstraint()]
+            scene.rootNode.addChildNode(label)
+        }
 
         // Units are millimetres, so the default camera clips badly without help.
         let longest = max(mesh.sizeMM.max(), 1)
@@ -745,7 +814,8 @@ struct ResultView: View {
                         return url
                     }
                 }.value
-                shareItem = ShareItem(url: url)
+                if isVisible { shareItem = ShareItem(url: url) }
+                await refreshStorage()
             } catch {
                 errorMessage = "Export failed: \(error.localizedDescription)"
             }

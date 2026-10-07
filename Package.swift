@@ -12,7 +12,7 @@ let package = Package(
         .target(name: "Geometry", path: "Sources",
                 exclude: ["AppModel.swift", "CaptureView.swift", "Diagnostics.swift", "HomeView.swift",
                           "LidarScan3DApp.swift", "MeshDataPreview.swift", "ReconstructionView.swift",
-                          "ResultView.swift", "Info.plist"], sources: ["Geometry", "ScanFolder.swift"]),
+                          "ResultView.swift", "ScanRow.swift", "Info.plist"], sources: ["Geometry", "ScanFolder.swift"]),
         .testTarget(name: "GeometryTests", dependencies: ["Geometry"], path: "Tests/GeometryTests"),
     ]
 )

@@ -56,6 +56,7 @@ actor MeshPreparationWorker {
 
     func prepare(_ recipe: Preparation) throws -> PreparedMesh {
         try Task.checkCancellation()
+        guard recipe.isValid else { throw CocoaError(.fileReadCorruptFile) }
         let sameRotation = previous?.rotation == recipe.rotation
         let sameSupport = sameRotation && previous?.removeSupport == recipe.removeSupport
         let sameFragments = sameSupport && previous?.removeFragments == recipe.removeFragments

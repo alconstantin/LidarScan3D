@@ -12,6 +12,11 @@ struct PrintReport: Sendable, Equatable {
     var intersectingTriangles = 0
     var intersectionCheckComplete = true
 
+    /// Bounded examples for inspection, in the same coordinates as the exported mesh.
+    var problemEdges: [SIMD2<UInt32>] = []
+    var problemFaces: [Int] = []
+    var highlightsTruncated = false
+
     var isWatertight: Bool {
         holeEdges == 0 && nonManifoldEdges == 0 && flippedEdges == 0
             && degenerateTriangles == 0 && volumeMM3 > 0 && inwardShells == 0
@@ -79,9 +84,24 @@ extension MeshData {
         report.holeEdges = undirected.values.filter { $0 == 1 }.count
         report.nonManifoldEdges = undirected.values.filter { $0 > 2 }.count
         report.flippedEdges = directed.values.filter { $0 > 1 }.count
+        let badEdges = undirected.keys.filter { edge in
+            undirected[edge] != 2 || (directed[edge] ?? 0) > 1
+                || (directed[(edge & 0xffff_ffff) << 32 | (edge >> 32)] ?? 0) > 1
+        }.sorted()
+        // Convert welded IDs back to this mesh's actual vertex indices.
+        var representatives: [UInt32: UInt32] = [:]
+        for i in canonical.indices where representatives[canonical[i]] == nil { representatives[canonical[i]] = UInt32(i) }
+        report.problemEdges = badEdges.prefix(2000).map {
+            SIMD2(representatives[UInt32($0 >> 32)]!, representatives[UInt32($0 & 0xffff_ffff)]!)
+        }
+        let inward = Set(shellVolumes.filter { $0.value <= 0 }.keys)
+        report.problemFaces = (0..<triangleCount).filter { valid[$0] && inward.contains(root($0)) }.prefix(1000).map { $0 }
+        report.highlightsTruncated = badEdges.count > 2000 || report.problemFaces.count == 1000
         let intersections = MeshIntersections.check(self, canonical: canonical)
         report.intersectingTriangles = intersections.count
         report.intersectionCheckComplete = intersections.complete
+        report.problemFaces = Array(Set(report.problemFaces + intersections.faces)).sorted()
+        report.highlightsTruncated = report.highlightsTruncated || !intersections.complete
         return report
     }
 }
@@ -100,7 +120,7 @@ private enum MeshIntersections {
         var right = -1
         var faces: [Int] = []
     }
-    static func check(_ mesh: MeshData, canonical: [UInt32]) -> (count: Int, complete: Bool) {
+    static func check(_ mesh: MeshData, canonical: [UInt32]) -> (count: Int, complete: Bool, faces: [Int]) {
         var faces: [Face] = []
         for t in 0..<mesh.triangleCount {
             let ids = (0..<3).map { Int(mesh.indices[t * 3 + $0]) }
@@ -110,7 +130,7 @@ private enum MeshIntersections {
             faces.append(Face(ids: SIMD3(canonical[ids[0]], canonical[ids[1]], canonical[ids[2]]),
                               a: a, b: b, c: c, lo: simd_min(a, simd_min(b, c)), hi: simd_max(a, simd_max(b, c))))
         }
-        guard !faces.isEmpty else { return (0, true) }
+        guard !faces.isEmpty else { return (0, true, []) }
         var nodes: [Node] = []
         func build(_ list: [Int]) -> Int {
             var lo = faces[list[0]].lo, hi = faces[list[0]].hi
@@ -129,6 +149,7 @@ private enum MeshIntersections {
         }
         _ = build(Array(faces.indices))
         var count = 0, work = 0
+        var problemFaces = Set<Int>()
         var stack = [(0, 0)]
         let epsilon = 0.000001
         func overlaps(_ a: Node, _ b: Node) -> Bool {
@@ -137,7 +158,7 @@ private enum MeshIntersections {
         }
         while let (i, j) = stack.popLast() {
             work += 1
-            if Task.isCancelled || work > 2_000_000 { return (count, false) }
+            if Task.isCancelled || work > 2_000_000 { return (count, false, problemFaces.sorted()) }
             let a = nodes[i], b = nodes[j]
             guard overlaps(a, b) else { continue }
             if a.left < 0 && b.left < 0 {
@@ -146,12 +167,14 @@ private enum MeshIntersections {
                         let f = faces[x], g = faces[y]
                         if (0..<3).contains(where: { f.hi[$0] < g.lo[$0] - epsilon || g.hi[$0] < f.lo[$0] - epsilon }) { continue }
                         work += 1
-                        if work > 2_000_000 { return (count, false) }
+                        if work > 2_000_000 { return (count, false, problemFaces.sorted()) }
                         // Neighbours meet along an edge or vertex by design.
                         if (0..<3).contains(where: { k in (0..<3).contains { f.ids[k] == g.ids[$0] } }) { continue }
                         if intersects(f, g) {
                             count += 1
-                            if count >= 100 { return (count, false) }
+                            problemFaces.insert(x)
+                            problemFaces.insert(y)
+                            if count >= 100 { return (count, false, problemFaces.sorted()) }
                         }
                     }
                 }
@@ -163,7 +186,7 @@ private enum MeshIntersections {
                 stack.append((i, b.left)); stack.append((i, b.right))
             }
         }
-        return (count, true)
+        return (count, true, problemFaces.sorted())
     }
     /// Separating-axis test, including in-plane axes for coplanar triangles.
     private static func intersects(_ a: Face, _ b: Face) -> Bool {

@@ -35,3 +35,44 @@ extension MeshData {
         return geometry
     }
 }
+
+
+extension MeshData {
+    /// Overlays are separate nodes: highlighting never changes the export geometry.
+    func problemNodes(report: PrintReport) -> [SCNNode] {
+        var nodes: [SCNNode] = []
+        if !report.problemEdges.isEmpty {
+            let positions = SCNGeometrySource(vertices: vertices.map { SCNVector3($0.x, $0.y, $0.z) })
+            let lines = report.problemEdges.flatMap { [$0.x, $0.y] }
+            let geometry = SCNGeometry(sources: [positions], elements: [SCNGeometryElement(indices: lines, primitiveType: .line)])
+            geometry.firstMaterial = Self.problemMaterial(.systemOrange)
+            let node = SCNNode(geometry: geometry)
+            node.name = "surfaceProblems"
+            node.renderingOrder = 10
+            nodes.append(node)
+        }
+        if !report.problemFaces.isEmpty {
+            let positions = SCNGeometrySource(vertices: vertices.map { SCNVector3($0.x, $0.y, $0.z) })
+            let faces = report.problemFaces.filter { $0 >= 0 && $0 < triangleCount }.flatMap { face in
+                Array(indices[(face * 3)..<(face * 3 + 3)])
+            }
+            let geometry = SCNGeometry(sources: [positions], elements: [SCNGeometryElement(indices: faces, primitiveType: .triangles)])
+            geometry.firstMaterial = Self.problemMaterial(.systemRed.withAlphaComponent(0.7))
+            let node = SCNNode(geometry: geometry)
+            node.name = "surfaceProblems"
+            node.renderingOrder = 10
+            nodes.append(node)
+        }
+        return nodes
+    }
+
+    private static func problemMaterial(_ color: UIColor) -> SCNMaterial {
+        let material = SCNMaterial()
+        material.diffuse.contents = color
+        material.lightingModel = .constant
+        material.isDoubleSided = true
+        material.readsFromDepthBuffer = false
+        material.writesToDepthBuffer = false
+        return material
+    }
+}
