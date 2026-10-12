@@ -29,6 +29,9 @@ struct ResultView: View {
     @State private var flat: MeshData?          // prepared mesh after the base cut
     @State private var orientation = MeshData.noRotation
     @State private var isReoriented = false
+    @State private var flatFaces: [FlatFace] = []
+    /// Which of `flatFaces` the current orientation rests on, if it came from Lay flat.
+    @State private var flatFaceIndex: Int?
     @State private var errorMessage: String?
     @State private var scalePercent: Double = 100
     @State private var removeSupportSurface = false
@@ -271,17 +274,37 @@ struct ResultView: View {
                         turnButton("Tip left", "arrow.left", axis: Self.yAxis, clockwise: true)
                         turnButton("Tip right", "arrow.right", axis: Self.yAxis, clockwise: false)
                     }
+                    if let mesh, !flatFaces.isEmpty {
+                        Button {
+                            let next = flatFaceIndex.map { ($0 + 1) % flatFaces.count } ?? 0
+                            orientation = flatFaces[next].rotation(for: mesh)
+                            isReoriented = simd_length(orientation.imag) > 1e-6
+                            flatFaceIndex = next
+                            rebuild()
+                        } label: {
+                            if let index = flatFaceIndex, flatFaces.count > 1 {
+                                Label("Next flat face (\(index + 1) of \(flatFaces.count))", systemImage: "arrow.down.to.line")
+                            } else {
+                                Label("Lay flat on largest face", systemImage: "arrow.down.to.line")
+                            }
+                        }
+                        if let index = flatFaceIndex {
+                            Text("Resting on \(flatFaces[index].contactAreaMM2.formatted(.number.precision(.fractionLength(0)))) mm² of flat surface")
+                                .foregroundStyle(.secondary)
+                        }
+                    }
                     if isReoriented {
                         Button("Reset orientation") {
                             orientation = MeshData.noRotation
                             isReoriented = false
+                            flatFaceIndex = nil
                             rebuild()
                         }
                     }
                 } header: {
                     Text("Orientation")
                 } footer: {
-                    Text("Quarter turns, which between them reach every side. The flat base is cut from whichever side faces the bed, so turn the model until the side you want to print on is down. The grey bed in the preview shows how the model sits: a scan that leans touches it on one side and lifts off on the other.")
+                    Text("Lay flat rests the model on a flat outer side at any angle, correcting a scan that leans; tap again to try the next face. Quarter turns reach every axis-aligned side. The flat base is cut from whichever side faces the bed, so turn the model until the side you want to print on is down. The grey bed in the preview shows how the model sits: a scan that leans touches it on one side and lifts off on the other.")
                 }
 
                 Section {
@@ -548,6 +571,7 @@ struct ResultView: View {
         Button {
             orientation = MeshData.quarterTurn(about: axis, clockwise: clockwise) * orientation
             isReoriented = true
+            flatFaceIndex = nil
             rebuild()
         } label: {
             Label(title, systemImage: symbol)
@@ -573,7 +597,7 @@ struct ResultView: View {
         texturedScene = await withTaskCancellationHandler { await sceneTask.value } onCancel: { sceneTask.cancel() }
         guard !Task.isCancelled else { return }
         do {
-            let loadTask = Task.detached { () throws -> (MeshData, PrintReport, Int) in
+            let loadTask = Task.detached { () throws -> (MeshData, PrintReport, Int, [FlatFace]) in
                 // Squared up once, here, so every size and turn downstream starts from
                 // a model whose sides run along X and Y rather than at the capture's heading.
                 try Task.checkCancellation()
@@ -584,14 +608,17 @@ struct ResultView: View {
                 let supportSuggestion = loaded.removingSupportSurface()?.removedTriangles ?? 0
                 let report = loaded.printReport()
                 try Task.checkCancellation()
-                return (loaded, report, supportSuggestion)
+                let faces = loaded.flatFaces()
+                try Task.checkCancellation()
+                return (loaded, report, supportSuggestion, faces)
             }
-            let (loaded, report, supportSuggestion) = try await withTaskCancellationHandler { try await loadTask.value } onCancel: { loadTask.cancel() }
+            let (loaded, report, supportSuggestion, faces) = try await withTaskCancellationHandler { try await loadTask.value } onCancel: { loadTask.cancel() }
             guard !Task.isCancelled else { return }
             mesh = loaded
             oriented = loaded
             loadedReport = report
             suggestedSupportTriangles = supportSuggestion
+            flatFaces = faces
             preparationWorker = MeshPreparationWorker(loaded)
             do { restore(try Preparation.load(from: scan.preparationURL)) }
             catch { preparationError = "Saved preparation could not be read. Reset preparation to replace it, or preserve the file for recovery." }
@@ -612,6 +639,7 @@ struct ResultView: View {
 
     private func restore(_ recipe: Preparation) {
         orientation = recipe.quaternion
+        flatFaceIndex = nil
         isReoriented = simd_length(orientation.imag) > 1e-6
         scalePercent = recipe.scalePercent
         removeSupportSurface = recipe.removeSupport
