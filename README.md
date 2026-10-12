@@ -6,14 +6,14 @@ An iPhone app that turns real objects into models for 3D printing using Apple's
 LiDAR-guided Object Capture and on-device photogrammetry. Prepare the model at
 millimetre scale, inspect its surface, and export 3MF, STL or OBJ.
 
-**Current source version: 1.2.** Local builds identify themselves as 1.2 (3).
-GitHub Actions builds use their workflow run number. Tags `v1.1` and `v1.2` have
+**Current source version: 1.3.** Local builds identify themselves as 1.3 (4).
+GitHub Actions builds use their workflow run number. Tags `v1.1`, `v1.2` and `v1.3` have
 been pushed; downloadable releases depend on successful tagged builds.
 
 **Status: ready for the next device-testing round.** Local validation passed 65
 automated tests, an unsigned iPhoneOS Release build, and independent sample STL/3MF
 topology checks. These results do not establish physical-device capture quality,
-preview readability, real-scan performance or slicer compatibility for v1.2.
+preview readability, real-scan performance or slicer compatibility for v1.3.
 
 | Need | Guide |
 |---|---|
@@ -43,6 +43,9 @@ preview readability, real-scan performance or slicer compatibility for v1.2.
 - **Surface inspection:** check edge usage, winding, shell volume and non-neighbour
   triangle intersections. Optional orange edge/red face overlays locate warnings;
   generated previews show X/Y/Z markers. Compare with the original scan.
+- **Wall thickness:** inward rays measure how thick each sampled wall is at the
+  current scale; thin areas below a chosen minimum (0.4–1.6 mm) are reported and
+  can be highlighted in yellow.
 - **Printer fit:** presets for Bambu A1 mini, A1, P1/P2/X1 and H2D, plus custom
   width/depth/height and scale-to-fit.
 - **Scan library:** rename scans, browse thumbnails, inspect storage usage and
@@ -170,8 +173,9 @@ ring instead of filling every loop independently. It is not general mesh repair.
 ## Limitations and next work
 
 - Surface checks are bounded and exclude triangle pairs sharing a welded vertex.
-  Passing checks does not establish wall thickness, support requirements or complete
-  geometric validity. Inward shells may be intentional cavities and need review.
+  Passing checks does not establish support requirements or complete geometric
+  validity. Wall thickness is sampled (up to 20,000 rays) and measures nothing
+  where a ray leaves through a hole; overlapping shells can read as thin walls. Inward shells may be intentional cavities and need review.
 - LiDAR scale and photogrammetry shape are approximate. One measured dimension
   cannot correct bulging or missing detail. No precision claim replaces device tests.
 - Smoothing does not repair holes, decimate, hollow or remove self-intersections.
@@ -180,8 +184,7 @@ ring instead of filling every loop independently. It is not general mesh repair.
   model with no such face can still lean, and only quarter turns are offered for it.
 - Thumbnail rendering, overlays, accessibility, background interruptions and
   large-scan memory/thermal behavior still need physical-device verification.
-- The app icon remains a placeholder. Automatic repair and thickness analysis
-  should follow validated scans and measured requirements.
+- The app icon remains a placeholder. Automatic repair should follow validated scans and measured requirements.
 
 ## Project layout
 
@@ -197,6 +200,7 @@ ring instead of filling every loop independently. It is not general mesh repair.
 | `Sources/Geometry/MeshData.swift`, `CapTriangulation.swift` | Loading, cleanup, smoothing, cutting and STL/OBJ export |
 | `Sources/Geometry/Preparation.swift`, `CancellationGate.swift` | Saved recipes, serial processing and cancellation helpers |
 | `Sources/Geometry/LayFlat.swift` | Flat-face detection and lay-flat rotations |
+| `Sources/Geometry/WallThickness.swift` | Ray-cast wall thickness sampling |
 | `Sources/Geometry/PrintReport.swift`, `BuildVolume.swift`, `ThreeMF.swift` | Surface checks, fit calculations and 3MF export |
 | `Tests/GeometryTests/`, `Package.swift` | Platform-neutral regression suite |
 | `tools/check_stl.py`, `tools/make_sample.py` | Independent export audit and sample generation |

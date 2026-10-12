@@ -6,10 +6,19 @@ after successful tagged builds. Device validation is tracked separately in
 
 ## Unreleased
 
+- Nothing yet.
+
+## 1.3 — 13 October 2026
+
+Tag: `v1.3`; local app build: 4.
+
 - Added Lay flat: rests the model on its largest flat outer face at any angle,
   squares the footprint, and cycles through other flat faces. Saved like other turns.
+- Added wall-thickness analysis: sampled inward ray casts, a minimum-wall picker,
+  a thin-area warning that follows the print scale, and a yellow thin-wall overlay.
 - Updated README, installation instructions, audit publication status and project map.
 - Added test plan, release guide and structured bug-report template.
+- Not yet validated on a device; see S08/S09 in TESTING.md.
 
 ## 1.2 — 7 October 2026
 
