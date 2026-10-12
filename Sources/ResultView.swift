@@ -52,6 +52,9 @@ struct ResultView: View {
     @State private var preparationError: String?
     @State private var compareOriginal = false
     @State private var showSurfaceProblems = false
+    @State private var showThinWalls = false
+    /// The mesh the generated preview shows, for overlays built after the scene.
+    @State private var publishedMesh: MeshData?
     @State private var publishedReport: PrintReport?
     @State private var isVisible = false
     @State private var showingReset = false
@@ -80,6 +83,7 @@ struct ResultView: View {
     @AppStorage("customPrinterWidth") private var customWidth: Double = 220
     @AppStorage("customPrinterDepth") private var customDepth: Double = 220
     @AppStorage("customPrinterHeight") private var customHeight: Double = 250
+    @AppStorage("minimumWallMM") private var minimumWall: Double = 0.8
 
     private var buildVolume: BuildVolume? {
         if printer != .other { return printer.buildVolume }
@@ -140,7 +144,7 @@ struct ResultView: View {
 
     /// Falls back rather than blanking: an empty preview reads as a hang.
     private var previewScene: SCNScene? {
-        compareOriginal ? texturedScene : (showsGeneratedPreview || showSurfaceProblems ? (generatedScene ?? texturedScene) : texturedScene)
+        compareOriginal ? texturedScene : (showsGeneratedPreview || showSurfaceProblems || showThinWalls ? (generatedScene ?? texturedScene) : texturedScene)
     }
 
     private var trimMM: Float {
@@ -180,6 +184,12 @@ struct ResultView: View {
                             Text("Showing a limited selection of problems. Read the surface report for the full check status.")
                                 .font(.footnote).foregroundStyle(.orange)
                         }
+                    }
+                    Toggle("Highlight thin walls", isOn: $showThinWalls)
+                        .disabled(compareOriginal || isPreparing)
+                    if showThinWalls, !compareOriginal {
+                        Text("Yellow faces: walls thinner than \(mm(Float(minimumWall))) mm at the current scale.")
+                            .font(.footnote).foregroundStyle(.secondary)
                     }
                     Text("X: width · Y: depth · Z: height. Exports use the prepared model.")
                         .font(.caption).foregroundStyle(.secondary)
@@ -254,6 +264,10 @@ struct ResultView: View {
                     }
                     if let report = activeReport {
                         watertightness(report)
+                        wallCheck(report.walls)
+                        Picker("Minimum wall", selection: $minimumWall) {
+                            ForEach([0.4, 0.8, 1.2, 1.6], id: \.self) { Text("\(mm(Float($0))) mm").tag($0) }
+                        }
                     } else {
                         Label("Checking the surface…", systemImage: "hourglass")
                             .foregroundStyle(.secondary)
@@ -464,7 +478,15 @@ struct ResultView: View {
             if generatedScene == nil { rebuild() }
             else { updateProblemVisibility() }
         }
-        .onChange(of: scalePercent) { _, _ in savePreparation() }
+        .onChange(of: scalePercent) { _, _ in
+            savePreparation()
+            updateThinWallOverlay()
+        }
+        .onChange(of: minimumWall) { _, _ in updateThinWallOverlay() }
+        .onChange(of: showThinWalls) { _, _ in
+            if generatedScene == nil { rebuild() }
+            else { updateThinWallOverlay() }
+        }
         .onDisappear {
             isVisible = false
             rebuildTask?.cancel()
@@ -690,7 +712,9 @@ struct ResultView: View {
                 removedFragments = result.fragments?.removedComponents ?? 0
                 generatedScene = scene
                 publishedReport = result.report
+                publishedMesh = result.mesh
                 updateProblemVisibility()
+                updateThinWallOverlay()
                 // One report describes the final published mesh, whichever stage won.
                 loadedReport = result.report
                 supportReport = result.report
@@ -724,6 +748,43 @@ struct ResultView: View {
         }
     }
 
+    /// Rebuilt rather than hidden: which walls are thin depends on the scale and the
+    /// minimum, both of which change without re-preparing the mesh.
+    private func updateThinWallOverlay() {
+        guard let scene = generatedScene else { return }
+        scene.rootNode.childNodes.filter { $0.name == "thinWalls" }.forEach { $0.removeFromParentNode() }
+        guard showThinWalls, let mesh = publishedMesh, let walls = publishedReport?.walls,
+              let template = scene.rootNode.childNodes.first(where: { $0.name == "model" }) else { return }
+        let faces = walls.thinFaces(below: Float(minimumWall), scale: Float(scalePercent / 100))
+        guard let node = mesh.highlightNode(faces: faces, color: .systemYellow.withAlphaComponent(0.8)) else { return }
+        node.name = "thinWalls"
+        node.eulerAngles = template.eulerAngles
+        node.position = template.position
+        scene.rootNode.addChildNode(node)
+    }
+
+    @ViewBuilder
+    private func wallCheck(_ walls: WallThickness) -> some View {
+        let scale = Float(scalePercent / 100)
+        if let thinnest = walls.thinnestMM(scale: scale) {
+            let fraction = walls.thinAreaFraction(below: Float(minimumWall), scale: scale)
+            if fraction > 0 {
+                Label("Thin walls: \(fraction.formatted(.percent.precision(.fractionLength(0...1)))) of the checked surface is under \(mm(Float(minimumWall))) mm (thinnest \(mm(thinnest)) mm)", systemImage: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.orange)
+            } else {
+                Label("Walls at least \(mm(thinnest)) mm thick where measured", systemImage: "ruler")
+                    .foregroundStyle(.secondary)
+            }
+            if walls.isSampled {
+                Text("Wall thickness sampled on \(walls.sampledTriangles.formatted()) of \(walls.totalTriangles.formatted()) triangles.")
+                    .font(.footnote).foregroundStyle(.secondary)
+            }
+        } else if walls.sampledTriangles > 0 {
+            Label("Wall thickness could not be measured on this open surface", systemImage: "questionmark.circle")
+                .foregroundStyle(.secondary)
+        }
+    }
+
     private func updateProblemVisibility() {
         generatedScene?.rootNode.enumerateChildNodes { node, _ in
             if node.name == "surfaceProblems" { node.isHidden = !showSurfaceProblems }
@@ -737,6 +798,7 @@ struct ResultView: View {
         // The mesh is Z-up and rests on Z = 0; SceneKit is Y-up. Rotating -90° about X
         // stands it upright, then it drops by half its height to sit around the origin.
         let node = SCNNode(geometry: mesh.makeGeometry())
+        node.name = "model"
         node.eulerAngles.x = -.pi / 2
         node.position = SCNVector3(0, -mesh.sizeMM.z / 2, 0)
         scene.rootNode.addChildNode(node)

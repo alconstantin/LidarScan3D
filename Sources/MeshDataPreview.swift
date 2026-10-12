@@ -51,19 +51,25 @@ extension MeshData {
             node.renderingOrder = 10
             nodes.append(node)
         }
-        if !report.problemFaces.isEmpty {
-            let positions = SCNGeometrySource(vertices: vertices.map { SCNVector3($0.x, $0.y, $0.z) })
-            let faces = report.problemFaces.filter { $0 >= 0 && $0 < triangleCount }.flatMap { face in
-                Array(indices[(face * 3)..<(face * 3 + 3)])
-            }
-            let geometry = SCNGeometry(sources: [positions], elements: [SCNGeometryElement(indices: faces, primitiveType: .triangles)])
-            geometry.firstMaterial = Self.problemMaterial(.systemRed.withAlphaComponent(0.7))
-            let node = SCNNode(geometry: geometry)
+        if let node = highlightNode(faces: report.problemFaces, color: .systemRed.withAlphaComponent(0.7)) {
             node.name = "surfaceProblems"
-            node.renderingOrder = 10
             nodes.append(node)
         }
         return nodes
+    }
+
+    /// Draws the given triangles over the model, visible through the surface.
+    func highlightNode(faces: [Int], color: UIColor) -> SCNNode? {
+        let corners = faces.filter { $0 >= 0 && $0 < triangleCount }.flatMap { face in
+            Array(indices[(face * 3)..<(face * 3 + 3)])
+        }
+        guard !corners.isEmpty else { return nil }
+        let positions = SCNGeometrySource(vertices: vertices.map { SCNVector3($0.x, $0.y, $0.z) })
+        let geometry = SCNGeometry(sources: [positions], elements: [SCNGeometryElement(indices: corners, primitiveType: .triangles)])
+        geometry.firstMaterial = Self.problemMaterial(color)
+        let node = SCNNode(geometry: geometry)
+        node.renderingOrder = 10
+        return node
     }
 
     private static func problemMaterial(_ color: UIColor) -> SCNMaterial {
