@@ -174,23 +174,7 @@ struct ResultView: View {
 
             if let activeMesh {
                 Section {
-                    Toggle("Compare with original scan", isOn: $compareOriginal)
-                    Toggle("Highlight surface problems", isOn: $showSurfaceProblems)
-                        .disabled(compareOriginal || isPreparing)
-                    if showSurfaceProblems, !compareOriginal {
-                        Text("Orange lines: holes or inconsistent edges. Red faces: intersections or inward shells. Highlights show through the surface so hidden problems remain visible.")
-                            .font(.footnote).foregroundStyle(.secondary)
-                        if publishedReport?.highlightsTruncated == true {
-                            Text("Showing a limited selection of problems. Read the surface report for the full check status.")
-                                .font(.footnote).foregroundStyle(.orange)
-                        }
-                    }
-                    Toggle("Highlight thin walls", isOn: $showThinWalls)
-                        .disabled(compareOriginal || isPreparing)
-                    if showThinWalls, !compareOriginal {
-                        Text("Yellow faces: walls thinner than \(mm(Float(minimumWall))) mm at the current scale.")
-                            .font(.footnote).foregroundStyle(.secondary)
-                    }
+                    inspectionToggles
                     Text("X: width · Y: depth · Z: height. Exports use the prepared model.")
                         .font(.caption).foregroundStyle(.secondary)
                     Button("Reset all preparation", role: .destructive) { showingReset = true }
@@ -265,9 +249,6 @@ struct ResultView: View {
                     if let report = activeReport {
                         watertightness(report)
                         wallCheck(report.walls)
-                        Picker("Minimum wall", selection: $minimumWall) {
-                            ForEach([0.4, 0.8, 1.2, 1.6], id: \.self) { Text("\(mm(Float($0))) mm").tag($0) }
-                        }
                     } else {
                         Label("Checking the surface…", systemImage: "hourglass")
                             .foregroundStyle(.secondary)
@@ -275,7 +256,7 @@ struct ResultView: View {
                 } header: {
                     Text("Ready to print?")
                 } footer: {
-                    Text("Surface checks do not assess wall thickness or supports. Inspect the model and sliced layers before printing.")
+                    Text("Surface checks do not assess supports, and wall thickness is sampled. Inspect the model and sliced layers before printing.")
                     if let report = activeReport, !report.isWatertight {
                         Text("Scans are not always closed, and holes usually sit in the underside. Try a flat base, or raise its trim. Otherwise Bambu Studio offers Fix Model when it opens the file (on Windows), and most other slicers repair on import.")
                     }
@@ -288,25 +269,7 @@ struct ResultView: View {
                         turnButton("Tip left", "arrow.left", axis: Self.yAxis, clockwise: true)
                         turnButton("Tip right", "arrow.right", axis: Self.yAxis, clockwise: false)
                     }
-                    if let mesh, !flatFaces.isEmpty {
-                        Button {
-                            let next = flatFaceIndex.map { ($0 + 1) % flatFaces.count } ?? 0
-                            orientation = flatFaces[next].rotation(for: mesh)
-                            isReoriented = simd_length(orientation.imag) > 1e-6
-                            flatFaceIndex = next
-                            rebuild()
-                        } label: {
-                            if let index = flatFaceIndex, flatFaces.count > 1 {
-                                Label("Next flat face (\(index + 1) of \(flatFaces.count))", systemImage: "arrow.down.to.line")
-                            } else {
-                                Label("Lay flat on largest face", systemImage: "arrow.down.to.line")
-                            }
-                        }
-                        if let index = flatFaceIndex {
-                            Text("Resting on \(flatFaces[index].contactAreaMM2.formatted(.number.precision(.fractionLength(0)))) mm² of flat surface")
-                                .foregroundStyle(.secondary)
-                        }
-                    }
+                    layFlatControls
                     if isReoriented {
                         Button("Reset orientation") {
                             orientation = MeshData.noRotation
@@ -763,6 +726,53 @@ struct ResultView: View {
         scene.rootNode.addChildNode(node)
     }
 
+    private static let wallChoices: [Double] = [0.4, 0.8, 1.2, 1.6]
+
+    // Split out of body, which otherwise grows past what the type checker will solve.
+    @ViewBuilder
+    private var inspectionToggles: some View {
+        Toggle("Compare with original scan", isOn: $compareOriginal)
+        Toggle("Highlight surface problems", isOn: $showSurfaceProblems)
+            .disabled(compareOriginal || isPreparing)
+        if showSurfaceProblems, !compareOriginal {
+            Text("Orange lines: holes or inconsistent edges. Red faces: intersections or inward shells. Highlights show through the surface so hidden problems remain visible.")
+                .font(.footnote).foregroundStyle(.secondary)
+            if publishedReport?.highlightsTruncated == true {
+                Text("Showing a limited selection of problems. Read the surface report for the full check status.")
+                    .font(.footnote).foregroundStyle(.orange)
+            }
+        }
+        Toggle("Highlight thin walls", isOn: $showThinWalls)
+            .disabled(compareOriginal || isPreparing)
+        if showThinWalls, !compareOriginal {
+            Text("Yellow faces: walls thinner than \(mm(Float(minimumWall))) mm at the current scale.")
+                .font(.footnote).foregroundStyle(.secondary)
+        }
+    }
+
+    @ViewBuilder
+    private var layFlatControls: some View {
+        if let mesh, !flatFaces.isEmpty {
+            Button {
+                let next = flatFaceIndex.map { ($0 + 1) % flatFaces.count } ?? 0
+                orientation = flatFaces[next].rotation(for: mesh)
+                isReoriented = simd_length(orientation.imag) > 1e-6
+                flatFaceIndex = next
+                rebuild()
+            } label: {
+                if let index = flatFaceIndex, flatFaces.count > 1 {
+                    Label("Next flat face (\(index + 1) of \(flatFaces.count))", systemImage: "arrow.down.to.line")
+                } else {
+                    Label("Lay flat on largest face", systemImage: "arrow.down.to.line")
+                }
+            }
+            if let index = flatFaceIndex {
+                Text("Resting on \(flatFaces[index].contactAreaMM2.formatted(.number.precision(.fractionLength(0)))) mm² of flat surface")
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
     @ViewBuilder
     private func wallCheck(_ walls: WallThickness) -> some View {
         let scale = Float(scalePercent / 100)
@@ -782,6 +792,9 @@ struct ResultView: View {
         } else if walls.sampledTriangles > 0 {
             Label("Wall thickness could not be measured on this open surface", systemImage: "questionmark.circle")
                 .foregroundStyle(.secondary)
+        }
+        Picker("Minimum wall", selection: $minimumWall) {
+            ForEach(Self.wallChoices, id: \.self) { Text("\(mm(Float($0))) mm").tag($0) }
         }
     }
 
