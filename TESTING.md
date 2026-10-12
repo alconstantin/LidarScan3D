@@ -61,6 +61,7 @@ results do not validate capture. Mark missing-device checks as Not run.
 | S06 | Delete disposable scan from result and list | Confirmation; returns to list; all owned files removed; cancellation leaves files intact |
 | S07 | Custom printer and invalid/valid calibration | Invalid entries explained; valid size correct; 10–500% limits enforced |
 | S08 | Lay flat on a leaning boxy scan; tap again to cycle; leave and reopen | A whole flat side rests on the bed; footprint squared; chosen orientation restored; no option on round models |
+| S10 | Fill small holes on a scan with surface warnings; combine with Flat base; reopen | Hole count shown; edge warnings drop; patches visible and plausible; setting restored |
 | S09 | Wall check on a thin-walled object; change minimum wall and scale; highlight thin walls | Warning and yellow overlay follow minimum/scale; thinnest value plausible against calipers |
 | C01 | Deny camera, allow later in Settings | Clear recovery message; capture works after permission restored |
 | C02 | No initial photos / stopped photos | Stall guidance after roughly 15 seconds; finish disabled below 20 photos |

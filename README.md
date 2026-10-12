@@ -35,7 +35,7 @@ preview readability, real-scan performance or slicer compatibility for v1.3.
 - **Print preparation:** square the footprint to X/Y, lay the model flat on any flat
   outer face (correcting a lean), choose the bed-facing side,
   remove proposed support surfaces or tiny isolated fragments, apply reversible
-  smoothing, and cut/cap a flat base.
+  smoothing, fill small holes, and cut/cap a flat base.
 - **Saved edits:** orientation, scale, cleanup, smoothing and trim are saved with
   each scan. Reset preparation returns to the original mesh.
 - **Calibration:** match a measured width, depth, height or longest side with a
@@ -179,12 +179,14 @@ ring instead of filling every loop independently. It is not general mesh repair.
 - LiDAR scale and photogrammetry shape are approximate. One measured dimension
   cannot correct bulging or missing detail. No precision claim replaces device tests.
 - Smoothing does not repair holes, decimate, hollow or remove self-intersections.
+  Fill small holes closes open loops of up to 300 edges with flat patches; it does
+  not recreate missing shape, and loops sharing a vertex are left open.
   Flat-base cutting cannot reliably repair arbitrary damaged scans.
 - Lay flat needs a flat outer face covering at least 2% of the surface; a rounded
   model with no such face can still lean, and only quarter turns are offered for it.
 - Thumbnail rendering, overlays, accessibility, background interruptions and
   large-scan memory/thermal behavior still need physical-device verification.
-- The app icon remains a placeholder. Automatic repair should follow validated scans and measured requirements.
+- The app icon remains a placeholder. Broader automatic repair should follow validated scans and measured requirements.
 
 ## Project layout
 
@@ -201,6 +203,7 @@ ring instead of filling every loop independently. It is not general mesh repair.
 | `Sources/Geometry/Preparation.swift`, `CancellationGate.swift` | Saved recipes, serial processing and cancellation helpers |
 | `Sources/Geometry/LayFlat.swift` | Flat-face detection and lay-flat rotations |
 | `Sources/Geometry/WallThickness.swift` | Ray-cast wall thickness sampling |
+| `Sources/Geometry/HoleFilling.swift` | Boundary-loop detection and hole patches |
 | `Sources/Geometry/PrintReport.swift`, `BuildVolume.swift`, `ThreeMF.swift` | Surface checks, fit calculations and 3MF export |
 | `Tests/GeometryTests/`, `Package.swift` | Platform-neutral regression suite |
 | `tools/check_stl.py`, `tools/make_sample.py` | Independent export audit and sample generation |

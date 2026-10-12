@@ -9,8 +9,38 @@ struct Preparation: Codable, Equatable, Sendable {
     var removeSupport = false
     var removeFragments = false
     var smoothing: MeshSmoothingLevel = .off
+    var fillHoles = false
     var flatBase = false
     var trimFraction: Double = 0
+
+    init(version: Int = 1, rotation: SIMD4<Float> = SIMD4(0, 0, 0, 1), scalePercent: Double = 100,
+         removeSupport: Bool = false, removeFragments: Bool = false, smoothing: MeshSmoothingLevel = .off,
+         fillHoles: Bool = false, flatBase: Bool = false, trimFraction: Double = 0) {
+        self.version = version
+        self.rotation = rotation
+        self.scalePercent = scalePercent
+        self.removeSupport = removeSupport
+        self.removeFragments = removeFragments
+        self.smoothing = smoothing
+        self.fillHoles = fillHoles
+        self.flatBase = flatBase
+        self.trimFraction = trimFraction
+    }
+
+    /// Steps added after version 1 are optional in the file, so recipes saved by an
+    /// earlier build still open, with the new step off.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        version = try c.decode(Int.self, forKey: .version)
+        rotation = try c.decode(SIMD4<Float>.self, forKey: .rotation)
+        scalePercent = try c.decode(Double.self, forKey: .scalePercent)
+        removeSupport = try c.decode(Bool.self, forKey: .removeSupport)
+        removeFragments = try c.decode(Bool.self, forKey: .removeFragments)
+        smoothing = try c.decode(MeshSmoothingLevel.self, forKey: .smoothing)
+        fillHoles = try c.decodeIfPresent(Bool.self, forKey: .fillHoles) ?? false
+        flatBase = try c.decode(Bool.self, forKey: .flatBase)
+        trimFraction = try c.decode(Double.self, forKey: .trimFraction)
+    }
 
     var quaternion: simd_quatf { simd_normalize(simd_quatf(vector: rotation)) }
     var isValid: Bool {
@@ -41,9 +71,10 @@ struct PreparedMesh: Sendable {
     let support: SupportSurfaceRemoval?
     let fragments: SmallComponentCleanup?
     let smoothed: MeshData?
+    let filled: HoleFill?
     let cut: MeshData?
     let report: PrintReport
-    var beforeCut: MeshData { smoothed ?? fragments?.mesh ?? support?.mesh ?? oriented }
+    var beforeCut: MeshData { filled?.mesh ?? smoothed ?? fragments?.mesh ?? support?.mesh ?? oriented }
     var mesh: MeshData { cut ?? beforeCut }
 }
 
@@ -61,7 +92,8 @@ actor MeshPreparationWorker {
         let sameSupport = sameRotation && previous?.removeSupport == recipe.removeSupport
         let sameFragments = sameSupport && previous?.removeFragments == recipe.removeFragments
         let sameSmoothing = sameFragments && previous?.smoothing == recipe.smoothing
-        let sameCut = sameSmoothing && previous?.flatBase == recipe.flatBase && previous?.trimFraction == recipe.trimFraction
+        let sameFill = sameSmoothing && previous?.fillHoles == recipe.fillHoles
+        let sameCut = sameFill && previous?.flatBase == recipe.flatBase && previous?.trimFraction == recipe.trimFraction
         if sameCut, let cached { return cached }
         let oriented = sameRotation ? (cached?.oriented ?? original) : original.rotated(by: recipe.quaternion)
         try Task.checkCancellation()
@@ -73,12 +105,15 @@ actor MeshPreparationWorker {
         let cleaned = fragments?.mesh ?? supported
         let smoothed = sameSmoothing ? cached?.smoothed : (recipe.smoothing == .off ? nil : cleaned.smoothed(level: recipe.smoothing))
         try Task.checkCancellation()
-        let finished = smoothed ?? cleaned
+        let finish = smoothed ?? cleaned
+        let filled = sameFill ? cached?.filled : (recipe.fillHoles ? finish.fillingHoles() : nil)
+        try Task.checkCancellation()
+        let finished = filled?.mesh ?? finish
         let cut = recipe.flatBase && recipe.trimFraction > 0 ? finished.flatBase(trimMM: finished.sizeMM.z * Float(recipe.trimFraction)) : nil
         try Task.checkCancellation()
         let report = (cut ?? finished).printReport()
         try Task.checkCancellation()
-        let result = PreparedMesh(oriented: oriented, support: support, fragments: fragments, smoothed: smoothed, cut: cut, report: report)
+        let result = PreparedMesh(oriented: oriented, support: support, fragments: fragments, smoothed: smoothed, filled: filled, cut: cut, report: report)
         previous = recipe
         cached = result
         return result

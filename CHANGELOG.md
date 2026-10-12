@@ -6,7 +6,9 @@ after successful tagged builds. Device validation is tracked separately in
 
 ## Unreleased
 
-- Nothing yet.
+- Added Fill small holes: boundary loops of up to 300 edges are closed with
+  ear-clipped patches wound like the surrounding surface. Saved in the recipe;
+  recipes from earlier builds open with it off.
 
 ## 1.3 — 13 October 2026
 

@@ -26,6 +26,7 @@ struct ResultView: View {
     @State private var supportClean: MeshData?  // oriented after a captured table is removed
     @State private var fragmentsClean: MeshData? // support-cleaned mesh with small detached noise removed
     @State private var smoothed: MeshData?      // cleaned mesh after the selected surface finish
+    @State private var filled: MeshData?        // finished mesh with small holes closed
     @State private var flat: MeshData?          // prepared mesh after the base cut
     @State private var orientation = MeshData.noRotation
     @State private var isReoriented = false
@@ -41,6 +42,10 @@ struct ResultView: View {
     @State private var removedFragmentTriangles = 0
     @State private var removedFragments = 0
     @State private var smoothingLevel: MeshSmoothingLevel = .off
+    @State private var fillHoles = false
+    @State private var filledHoles = 0
+    @State private var skippedHoles = 0
+    @State private var addedHoleTriangles = 0
     @State private var flatBase = false
     @State private var trimFraction: Double = 0
     @State private var isPreparing = false
@@ -93,7 +98,7 @@ struct ResultView: View {
 
     private var preparation: Preparation {
         Preparation(rotation: orientation.vector, scalePercent: scalePercent, removeSupport: removeSupportSurface,
-                    removeFragments: removeSmallComponents, smoothing: smoothingLevel, flatBase: flatBase, trimFraction: trimFraction)
+                    removeFragments: removeSmallComponents, smoothing: smoothingLevel, fillHoles: fillHoles, flatBase: flatBase, trimFraction: trimFraction)
     }
 
     private enum Format { case threeMF, stl, obj }
@@ -113,6 +118,7 @@ struct ResultView: View {
     /// Until the cut lands, the mesh it is being cut from stands in for it.
     private var activeMesh: MeshData? {
         if flatBase, let flat { return flat }
+        if fillHoles, let filled { return filled }
         if smoothingLevel != .off, let smoothed { return smoothed }
         if removeSmallComponents, let fragmentsClean { return fragmentsClean }
         if removeSupportSurface, let supportClean { return supportClean }
@@ -122,6 +128,7 @@ struct ResultView: View {
     /// The geometry that the cut plane is measured from. Support and fragment removal
     /// can change the model's height, so the control must not keep using the original.
     private var preCutMesh: MeshData? {
+        if fillHoles, let filled { return filled }
         if smoothingLevel != .off, let smoothed { return smoothed }
         if removeSmallComponents, let fragmentsClean { return fragmentsClean }
         if removeSupportSurface, let supportClean { return supportClean }
@@ -132,6 +139,7 @@ struct ResultView: View {
     private var activeReport: PrintReport? {
         if isPreparing { return nil }
         if flatBase, flat != nil { return cutReport }
+        if fillHoles, filled != nil { return smoothingReport }
         if smoothingLevel != .off, smoothed != nil { return smoothingReport }
         if removeSmallComponents, fragmentsClean != nil { return fragmentsReport }
         if removeSupportSurface, supportClean != nil { return supportReport }
@@ -140,7 +148,7 @@ struct ResultView: View {
 
     /// The textured USDZ cannot show a turn or a cut, so anything that changes the
     /// geometry switches the preview to the mesh actually being exported.
-    private var showsGeneratedPreview: Bool { flatBase || smoothingLevel != .off || removeSupportSurface || removeSmallComponents || isReoriented }
+    private var showsGeneratedPreview: Bool { flatBase || fillHoles || smoothingLevel != .off || removeSupportSurface || removeSmallComponents || isReoriented }
 
     /// Falls back rather than blanking: an empty preview reads as a hang.
     private var previewScene: SCNScene? {
@@ -348,6 +356,8 @@ struct ResultView: View {
                             .foregroundStyle(.secondary)
                     }
 
+                    holeFillControls
+
                     // The rebuild rides the binding rather than onChange: the handler runs
                     // from the tap itself, so it cannot be lost if this row is rebuilt.
                     Toggle("Flat base", isOn: Binding(
@@ -382,17 +392,7 @@ struct ResultView: View {
                 } header: {
                     Text("Print preparation")
                 } footer: {
-                    if removeSupportSurface {
-                        Text("Removes the largest horizontal patch at the bottom, typically a table or turntable. Check the preview: a clean object can also have a flat base. Use Flat base afterwards to cap the opening for printing.")
-                    } else if removeSmallComponents {
-                        Text("Removes only disconnected pieces smaller than 0.5% of the main surface (and under 25 mm²). Check the preview when scanning an assembly with intentionally separate small parts.")
-                    } else if smoothingLevel != .off {
-                        Text("Softens gentle reconstruction noise while preserving sharp creases and open edges. It is reversible: choose Off to restore the unmodified scan.")
-                    } else if flatBase {
-                        Text("Slices the bottom off at the chosen height and caps it with a flat face, so the model sits solidly on the bed. Raise the trim until the ragged underside of the scan is gone. Measurements above already account for it.")
-                    } else {
-                        Text("Scans usually reconstruct a rough, uneven underside. A flat base cuts it off so the print adheres to the bed and stands straight.")
-                    }
+                    preparationFooter
                 }
 
                 Section {
@@ -622,6 +622,7 @@ struct ResultView: View {
         removeSupportSurface = recipe.removeSupport
         removeSmallComponents = recipe.removeFragments
         smoothingLevel = recipe.smoothing
+        fillHoles = recipe.fillHoles
         flatBase = recipe.flatBase
         trimFraction = recipe.trimFraction
     }
@@ -661,6 +662,10 @@ struct ResultView: View {
                 supportClean = result.support?.mesh
                 fragmentsClean = result.fragments?.mesh
                 smoothed = result.smoothed
+                filled = result.filled?.mesh
+                filledHoles = result.filled?.filledHoles ?? 0
+                skippedHoles = result.filled?.skippedHoles ?? 0
+                addedHoleTriangles = result.filled?.addedTriangles ?? 0
                 flat = result.cut
                 removedSupportTriangles = result.support?.removedTriangles ?? 0
                 removedFragmentTriangles = result.fragments?.removedTriangles ?? 0
@@ -716,6 +721,47 @@ struct ResultView: View {
         node.eulerAngles = template.eulerAngles
         node.position = template.position
         scene.rootNode.addChildNode(node)
+    }
+
+    @ViewBuilder
+    private var preparationFooter: some View {
+        if removeSupportSurface {
+            Text("Removes the largest horizontal patch at the bottom, typically a table or turntable. Check the preview: a clean object can also have a flat base. Use Flat base afterwards to cap the opening for printing.")
+        } else if removeSmallComponents {
+            Text("Removes only disconnected pieces smaller than 0.5% of the main surface (and under 25 mm²). Check the preview when scanning an assembly with intentionally separate small parts.")
+        } else if fillHoles {
+            Text("Closes open loops of up to 300 edges with a flat patch matching the surrounding surface. It closes gaps but does not recreate missing detail; check the patched areas in the preview. Large openings such as a missing underside are better closed with Flat base.")
+        } else if smoothingLevel != .off {
+            Text("Softens gentle reconstruction noise while preserving sharp creases and open edges. It is reversible: choose Off to restore the unmodified scan.")
+        } else if flatBase {
+            Text("Slices the bottom off at the chosen height and caps it with a flat face, so the model sits solidly on the bed. Raise the trim until the ragged underside of the scan is gone. Measurements above already account for it.")
+        } else {
+            Text("Scans usually reconstruct a rough, uneven underside. A flat base cuts it off so the print adheres to the bed and stands straight.")
+        }
+    }
+
+    @ViewBuilder
+    private var holeFillControls: some View {
+        Toggle("Fill small holes", isOn: Binding(
+            get: { fillHoles },
+            set: { isOn in
+                fillHoles = isOn
+                rebuild()
+            }
+        ))
+        if fillHoles, !isPreparing {
+            if filledHoles > 0 {
+                Label("Filled \(filledHoles) hole\(filledHoles == 1 ? "" : "s") · \(addedHoleTriangles.formatted()) triangles", systemImage: "circle.dashed.inset.filled")
+                    .foregroundStyle(.secondary)
+            } else if skippedHoles == 0 {
+                Label("No holes found", systemImage: "info.circle")
+                    .foregroundStyle(.secondary)
+            }
+            if skippedHoles > 0 {
+                Label("\(skippedHoles) larger or irregular opening\(skippedHoles == 1 ? "" : "s") left open", systemImage: "exclamationmark.circle")
+                    .foregroundStyle(.orange)
+            }
+        }
     }
 
     private static let wallChoices: [Double] = [0.4, 0.8, 1.2, 1.6]
@@ -893,6 +939,7 @@ struct ResultView: View {
         if removeSupportSurface, supportClean != nil { suffix += " support removed" }
         if removeSmallComponents, fragmentsClean != nil { suffix += " fragments removed" }
         if smoothingLevel != .off, smoothed != nil { suffix += " smooth \(smoothingLevel.rawValue)" }
+        if fillHoles, filledHoles > 0 { suffix += " holes filled" }
         if flatBase { suffix += String(format: " flat %.1fmm", Double(printedTrimMM)) }
         let baseName = "\(scan.exportName) \(Int(scalePercent.rounded()))pct\(suffix)"
         let exportsURL = scan.exportsURL
