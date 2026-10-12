@@ -1,12 +1,12 @@
-# v1.2 test plan
+# v1.3 test plan
 
-This plan targets `v1.2` (`0c4fff8`) and later documentation-only commits.
+This plan targets `v1.3` and later documentation-only commits.
 Tags identify source; the installed app version/build and selected Actions run
 identify the binary. Do not assume a release asset exists just because its tag does.
 
 ## Before testing
 
-1. Confirm the v1.2 Actions run passed and its IPA is present, or build the tag in Xcode.
+1. Confirm the v1.3 Actions run passed and its IPA is present, or build the tag in Xcode.
 2. Record the source commit, app version/build, installation method, device identifier
    and iOS version. Use the home-screen version label and Xcode/Console diagnostics.
 3. Back up existing scan folders through Files. Use a separate disposable scan for
@@ -35,7 +35,7 @@ xcodebuild -project LidarScan3D.xcodeproj -scheme LidarScan3D \
 git diff --check
 ```
 
-At v1.2, the suite has 65 tests. Independent sample exports should agree at about
+At v1.3, the suite has 80 tests. Independent sample exports should agree at about
 77 × 77 × 89 mm after the default 2% trim, sit at Z=0, and have no hole,
 over-used or inconsistent edges. The Python audit checks topology, not intersections.
 An unsigned build cannot be installed until signed.
@@ -60,6 +60,8 @@ results do not validate capture. Mark missing-device checks as Not run.
 | S05 | Remove source photos on disposable completed scan | Confirmation shown; storage decreases; model/recipe/exports remain usable |
 | S06 | Delete disposable scan from result and list | Confirmation; returns to list; all owned files removed; cancellation leaves files intact |
 | S07 | Custom printer and invalid/valid calibration | Invalid entries explained; valid size correct; 10–500% limits enforced |
+| S08 | Lay flat on a leaning boxy scan; tap again to cycle; leave and reopen | A whole flat side rests on the bed; footprint squared; chosen orientation restored; no option on round models |
+| S09 | Wall check on a thin-walled object; change minimum wall and scale; highlight thin walls | Warning and yellow overlay follow minimum/scale; thinnest value plausible against calipers |
 | C01 | Deny camera, allow later in Settings | Clear recovery message; capture works after permission restored |
 | C02 | No initial photos / stopped photos | Stall guidance after roughly 15 seconds; finish disabled below 20 photos |
 | C03 | Multiple-height passes and eligible flip | No crash; pause/resume/detection work; pass count retained after flip |

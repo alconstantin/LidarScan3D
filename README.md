@@ -6,14 +6,14 @@ An iPhone app that turns real objects into models for 3D printing using Apple's
 LiDAR-guided Object Capture and on-device photogrammetry. Prepare the model at
 millimetre scale, inspect its surface, and export 3MF, STL or OBJ.
 
-**Current source version: 1.2.** Local builds identify themselves as 1.2 (3).
-GitHub Actions builds use their workflow run number. Tags `v1.1` and `v1.2` have
+**Current source version: 1.3.** Local builds identify themselves as 1.3 (4).
+GitHub Actions builds use their workflow run number. Tags `v1.1`, `v1.2` and `v1.3` have
 been pushed; downloadable releases depend on successful tagged builds.
 
 **Status: ready for the next device-testing round.** Local validation passed 65
 automated tests, an unsigned iPhoneOS Release build, and independent sample STL/3MF
 topology checks. These results do not establish physical-device capture quality,
-preview readability, real-scan performance or slicer compatibility for v1.2.
+preview readability, real-scan performance or slicer compatibility for v1.3.
 
 | Need | Guide |
 |---|---|

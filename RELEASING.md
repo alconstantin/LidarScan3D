@@ -4,8 +4,8 @@
 
 | Identifier | Meaning |
 |---|---|
-| `MARKETING_VERSION` in `project.yml` | App version for builds from that source, currently 1.2 |
-| `CURRENT_PROJECT_VERSION` | Local app build, currently 3; CI overrides with its run number |
+| `MARKETING_VERSION` in `project.yml` | App version for builds from that source, currently 1.3 |
+| `CURRENT_PROJECT_VERSION` | Local app build, currently 4; CI overrides with its run number |
 | Git tag `v1.2` / GitHub release | Named source snapshot / downloadable assets produced by its successful workflow |
 
 Changing the app version does not create a tag. Pushing main does not create a
