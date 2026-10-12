@@ -1,7 +1,8 @@
 import Foundation
 import simd
 
-/// Surface checks, not a guarantee about wall thickness, supports or slicer behavior.
+/// Surface checks and a sampled wall-thickness guide, not a guarantee about supports
+/// or slicer behavior.
 struct PrintReport: Sendable, Equatable {
     var holeEdges = 0
     var nonManifoldEdges = 0
@@ -16,6 +17,10 @@ struct PrintReport: Sendable, Equatable {
     var problemEdges: [SIMD2<UInt32>] = []
     var problemFaces: [Int] = []
     var highlightsTruncated = false
+
+    /// Not part of `isWatertight`: whether a wall is too thin depends on the print
+    /// scale and nozzle, which the caller knows and this report does not.
+    var walls = WallThickness()
 
     var isWatertight: Bool {
         holeEdges == 0 && nonManifoldEdges == 0 && flippedEdges == 0
@@ -102,6 +107,7 @@ extension MeshData {
         report.intersectionCheckComplete = intersections.complete
         report.problemFaces = Array(Set(report.problemFaces + intersections.faces)).sorted()
         report.highlightsTruncated = report.highlightsTruncated || !intersections.complete
+        report.walls = wallThickness()
         return report
     }
 }
