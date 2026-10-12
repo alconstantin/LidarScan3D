@@ -6,6 +6,8 @@ after successful tagged builds. Device validation is tracked separately in
 
 ## Unreleased
 
+- Added Lay flat: rests the model on its largest flat outer face at any angle,
+  squares the footprint, and cycles through other flat faces. Saved like other turns.
 - Updated README, installation instructions, audit publication status and project map.
 - Added test plan, release guide and structured bug-report template.
 

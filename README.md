@@ -32,7 +32,8 @@ preview readability, real-scan performance or slicer compatibility for v1.2.
   object when Object Capture expects it can align the underside.
 - **On-device reconstruction and recovery:** interrupted scans remain visible.
   Retry reconstruction when enough photos are saved, or explicitly delete them.
-- **Print preparation:** square the footprint to X/Y, choose the bed-facing side,
+- **Print preparation:** square the footprint to X/Y, lay the model flat on any flat
+  outer face (correcting a lean), choose the bed-facing side,
   remove proposed support surfaces or tiny isolated fragments, apply reversible
   smoothing, and cut/cap a flat base.
 - **Saved edits:** orientation, scale, cleanup, smoothing and trim are saved with
@@ -175,11 +176,12 @@ ring instead of filling every loop independently. It is not general mesh repair.
   cannot correct bulging or missing detail. No precision claim replaces device tests.
 - Smoothing does not repair holes, decimate, hollow or remove self-intersections.
   Flat-base cutting cannot reliably repair arbitrary damaged scans.
-- Quarter turns and footprint squaring do not correct an arbitrary lean.
+- Lay flat needs a flat outer face covering at least 2% of the surface; a rounded
+  model with no such face can still lean, and only quarter turns are offered for it.
 - Thumbnail rendering, overlays, accessibility, background interruptions and
   large-scan memory/thermal behavior still need physical-device verification.
-- The app icon remains a placeholder. Automatic repair, thickness analysis and
-  arbitrary tilt adjustment should follow validated scans and measured requirements.
+- The app icon remains a placeholder. Automatic repair and thickness analysis
+  should follow validated scans and measured requirements.
 
 ## Project layout
 
@@ -194,6 +196,7 @@ ring instead of filling every loop independently. It is not general mesh repair.
 | `Sources/Diagnostics.swift` | Device capability and capture logging |
 | `Sources/Geometry/MeshData.swift`, `CapTriangulation.swift` | Loading, cleanup, smoothing, cutting and STL/OBJ export |
 | `Sources/Geometry/Preparation.swift`, `CancellationGate.swift` | Saved recipes, serial processing and cancellation helpers |
+| `Sources/Geometry/LayFlat.swift` | Flat-face detection and lay-flat rotations |
 | `Sources/Geometry/PrintReport.swift`, `BuildVolume.swift`, `ThreeMF.swift` | Surface checks, fit calculations and 3MF export |
 | `Tests/GeometryTests/`, `Package.swift` | Platform-neutral regression suite |
 | `tools/check_stl.py`, `tools/make_sample.py` | Independent export audit and sample generation |
