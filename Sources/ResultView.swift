@@ -441,15 +441,7 @@ struct ResultView: View {
             if generatedScene == nil { rebuild() }
             else { updateProblemVisibility() }
         }
-        .onChange(of: scalePercent) { _, _ in
-            savePreparation()
-            updateThinWallOverlay()
-        }
-        .onChange(of: minimumWall) { _, _ in updateThinWallOverlay() }
-        .onChange(of: showThinWalls) { _, _ in
-            if generatedScene == nil { rebuild() }
-            else { updateThinWallOverlay() }
-        }
+        .onChange(of: scalePercent) { _, _ in savePreparation() }
         .onDisappear {
             isVisible = false
             rebuildTask?.cancel()
@@ -729,8 +721,18 @@ struct ResultView: View {
     private static let wallChoices: [Double] = [0.4, 0.8, 1.2, 1.6]
 
     // Split out of body, which otherwise grows past what the type checker will solve.
-    @ViewBuilder
     private var inspectionToggles: some View {
+        inspectionToggleRows
+            .onChange(of: scalePercent) { _, _ in updateThinWallOverlay() }
+            .onChange(of: minimumWall) { _, _ in updateThinWallOverlay() }
+            .onChange(of: showThinWalls) { _, _ in
+                if generatedScene == nil { rebuild() }
+                else { updateThinWallOverlay() }
+            }
+    }
+
+    @ViewBuilder
+    private var inspectionToggleRows: some View {
         Toggle("Compare with original scan", isOn: $compareOriginal)
         Toggle("Highlight surface problems", isOn: $showSurfaceProblems)
             .disabled(compareOriginal || isPreparing)
