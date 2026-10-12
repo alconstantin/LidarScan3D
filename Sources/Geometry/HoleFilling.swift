@@ -20,20 +20,35 @@ extension MeshData {
     /// rebuild missing shape, which is why a large opening such as a missing
     /// underside is left to the flat base cut instead.
     func fillingHoles(maxEdges: Int = 300) -> HoleFill? {
+        // Edges are matched by position, as the surface report does: copies of one
+        // point under different indices (a pole, a texture seam) are not a hole.
+        var ids: [VertexKey: UInt32] = [:]
+        var representative: [UInt32] = []
+        let canonical = vertices.indices.map { i -> UInt32 in
+            let key = VertexKey(vertices[i])
+            if let existing = ids[key] { return existing }
+            let id = UInt32(representative.count)
+            ids[key] = id
+            representative.append(UInt32(i))
+            return id
+        }
+        func corner(_ t: Int, _ k: Int) -> UInt32 { canonical[Int(indices[3 * t + k])] }
+        func collapsed(_ t: Int) -> Bool { corner(t, 0) == corner(t, 1) || corner(t, 1) == corner(t, 2) || corner(t, 0) == corner(t, 2) }
+
         // A boundary edge is used by one triangle only. The patch must run the other way
         // along it, so the chains are built from reversed edges.
         var undirected: [UInt64: Int] = [:]
-        for t in 0..<triangleCount {
+        for t in 0..<triangleCount where !collapsed(t) {
             for k in 0..<3 {
-                let a = indices[3 * t + k], b = indices[3 * t + (k + 1) % 3]
+                let a = corner(t, k), b = corner(t, (k + 1) % 3)
                 undirected[UInt64(min(a, b)) << 32 | UInt64(max(a, b)), default: 0] += 1
             }
         }
         var outgoing: [UInt32: [UInt32]] = [:]
         var boundaryEdges = 0
-        for t in 0..<triangleCount {
+        for t in 0..<triangleCount where !collapsed(t) {
             for k in 0..<3 {
-                let a = indices[3 * t + k], b = indices[3 * t + (k + 1) % 3]
+                let a = corner(t, k), b = corner(t, (k + 1) % 3)
                 guard undirected[UInt64(min(a, b)) << 32 | UInt64(max(a, b))] == 1 else { continue }
                 outgoing[b, default: []].append(a)
                 boundaryEdges += 1
@@ -70,7 +85,7 @@ extension MeshData {
         var outIndices = indices
         var added = 0
         for loop in loops {
-            let patch = Self.patch(loop, vertices: vertices, nextVertex: UInt32(outVertices.count))
+            let patch = Self.patch(loop.map { representative[Int($0)] }, vertices: vertices, nextVertex: UInt32(outVertices.count))
             outVertices += patch.newVertices
             outIndices += patch.indices
             added += patch.indices.count / 3
