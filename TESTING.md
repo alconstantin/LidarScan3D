@@ -1,12 +1,12 @@
-# v1.3 test plan
+# v1.4 test plan
 
-This plan targets `v1.3` and later documentation-only commits.
+This plan targets `v1.4` and later documentation-only commits.
 Tags identify source; the installed app version/build and selected Actions run
 identify the binary. Do not assume a release asset exists just because its tag does.
 
 ## Before testing
 
-1. Confirm the v1.3 Actions run passed and its IPA is present, or build the tag in Xcode.
+1. Confirm the v1.4 Actions run passed and its IPA is present, or build the tag in Xcode.
 2. Record the source commit, app version/build, installation method, device identifier
    and iOS version. Use the home-screen version label and Xcode/Console diagnostics.
 3. Back up existing scan folders through Files. Use a separate disposable scan for
@@ -35,7 +35,7 @@ xcodebuild -project LidarScan3D.xcodeproj -scheme LidarScan3D \
 git diff --check
 ```
 
-At v1.3, the suite has 80 tests. Independent sample exports should agree at about
+At v1.4, the suite has 88 tests. Independent sample exports should agree at about
 77 × 77 × 89 mm after the default 2% trim, sit at Z=0, and have no hole,
 over-used or inconsistent edges. The Python audit checks topology, not intersections.
 An unsigned build cannot be installed until signed.

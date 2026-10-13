@@ -18,10 +18,10 @@ your own free Apple ID. It takes about 10–15 minutes the first time.
 ## Step 1 — Download the app
 
 1. Open [GitHub Releases](https://github.com/alconstantin/LidarScan3D/releases)
-   and select **v1.3** for this test round.
+   and select **v1.4** for this test round.
 2. Under **Assets**, download **`LidarScan3D.ipa`**.
    Don't open it — just remember where it was saved (usually *Downloads*).
-3. If v1.3 has no IPA asset, check its [Actions run](https://github.com/alconstantin/LidarScan3D/actions).
+3. If v1.4 has no IPA asset, check its [Actions run](https://github.com/alconstantin/LidarScan3D/actions).
    A tag can exist before its build/release finishes. A successful run also provides
    an unsigned IPA artifact (GitHub sign-in required). Do not silently use an older release.
 
@@ -79,7 +79,7 @@ your own free Apple ID. It takes about 10–15 minutes the first time.
 ## Step 6 — Done!
 
 Open **LiDAR Scan 3D** from your home screen. Check **App version** on the home
-screen: expect **1.3**, with build **4** for the local source build or a workflow
+screen: expect **1.4**, with build **5** for the local source build or a workflow
 run number for a CI build. Record it in [TESTING.md](TESTING.md).
 
 Try the sample first. Allow camera access when starting a real scan; if permission
